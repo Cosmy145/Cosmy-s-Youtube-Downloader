@@ -18,7 +18,11 @@ export async function POST(request: NextRequest) {
     const availableQualities = getAvailableQualities(metadata);
 
     return NextResponse.json<
-      ApiResponse<VideoMetadata & { availableQualities: string[] }>
+      ApiResponse<
+        VideoMetadata & {
+          availableQualities: { quality: string; hasAudio: boolean }[];
+        }
+      >
     >({
       success: true,
       data: {
