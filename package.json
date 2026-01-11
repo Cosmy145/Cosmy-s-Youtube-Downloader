@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "node scripts/setup-yt-dlp.js"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -17,7 +18,8 @@
     "framer-motion": "^12.25.0",
     "next": "16.1.1",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "yt-dlp-wrap": "^2.3.12"
   },
   "devDependencies": {
     "@types/file-saver": "^2.0.7",
