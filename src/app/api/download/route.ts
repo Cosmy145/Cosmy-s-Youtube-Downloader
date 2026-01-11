@@ -40,8 +40,7 @@ async function performDownload(
         activeDownloads.set(downloadId, {
           ...currentData,
           ...progress,
-          status:
-            progress.downloaded === "Converting" ? "converting" : "downloading",
+          status: progress.downloaded === "Merging" ? "merging" : "downloading",
         });
       },
       controller.signal

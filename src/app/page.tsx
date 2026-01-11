@@ -66,8 +66,8 @@ const useDownload = () => {
             setServerProgress({ ...d, phase: d.status || "downloading" });
 
             // Keep SSE open during conversion - only close when truly done
-            // The conversion phase sends percent=100 with downloaded="Converting"
-            if (d.status === "streaming" && d.downloaded !== "Converting") {
+            // The conversion/merge phase sends percent=100 with downloaded="Merging"
+            if (d.status === "streaming" && d.downloaded !== "Merging") {
               // Browser is receiving the file now - we're truly done
               isCompleted = true;
               setProgress(100);
@@ -95,9 +95,19 @@ const useDownload = () => {
         });
         if (title) params.append("title", title);
 
-        // Use window.location.href to trigger download while keeping page active
-        // (Content-Disposition: attachment prevents navigation)
-        window.location.href = `/api/download?${params.toString()}`;
+        // Use hidden iframe to trigger download so errors don't navigate page away
+        const iframe = document.createElement("iframe");
+        iframe.style.display = "none";
+        iframe.src = `/api/download?${params.toString()}`;
+        document.body.appendChild(iframe);
+
+        // Cleanup iframe after a long delay (enough for any download to start streaming)
+        // Removing it too early cancels the request!
+        setTimeout(() => {
+          if (document.body.contains(iframe)) {
+            document.body.removeChild(iframe);
+          }
+        }, 600000); // 10 minutes
       } catch (err: any) {
         setError(err.message);
         setDownloading(false);
@@ -142,6 +152,61 @@ const useDownload = () => {
         }
       : null;
 
+  const getMergeStats = (duration: number) => {
+    let currentSeconds = 0;
+
+    // Robust time retrieval
+    if (serverProgress?.mergedSeconds !== undefined) {
+      currentSeconds = serverProgress.mergedSeconds;
+    } else if (
+      serverProgress?.total &&
+      typeof serverProgress.total === "string" &&
+      serverProgress.total.includes("@")
+    ) {
+      try {
+        const timeStr = serverProgress.total.split("@")[0].trim();
+        const parts = timeStr.split(":").map((p) => parseFloat(p));
+        if (parts.length === 3)
+          currentSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        else if (parts.length === 2) currentSeconds = parts[0] * 60 + parts[1];
+      } catch (e) {}
+    }
+
+    const percent =
+      duration > 0
+        ? Math.min(100, Math.max(0, (currentSeconds / duration) * 100))
+        : 0;
+
+    // Calculate ETA
+    let eta = "Computing...";
+    if (duration > 0 && currentSeconds > 0) {
+      const remaining = duration - currentSeconds;
+      // Parse speed
+      let speedVal = 1;
+      if (serverProgress?.speed) {
+        // "1.57x" or "1.57 fps" (wait fps is diff)
+        // serverProgress.total usually has speed "1.57x" in the string we construct in backend!
+        // But serverProgress.speed is "xx fps".
+        // In yt-dlp-utils, we send: total: `... @ 1.57x`, speed: `xx fps`.
+        // So speed in 'x' is actually in the 'total' string or needs to be parsed?
+
+        // Let's parse speed from total string: "00:00:04 @ 1.57x"
+        const totalStr = serverProgress.total as string;
+        const match = totalStr.match(/@\s*([\d.]+)x/);
+        if (match) speedVal = parseFloat(match[1]);
+      }
+
+      if (speedVal > 0) {
+        const etaSeconds = remaining / speedVal;
+        const m = Math.floor(etaSeconds / 60);
+        const s = Math.floor(etaSeconds % 60);
+        eta = `${m}:${s.toString().padStart(2, "0")}`;
+      }
+    }
+
+    return { percent, eta, currentSeconds };
+  };
+
   return {
     downloading,
     progress,
@@ -151,6 +216,7 @@ const useDownload = () => {
     cancelDownload,
     formatBytes,
     stats,
+    getMergeStats,
   };
 };
 
@@ -182,24 +248,47 @@ const PlaylistItemRow = ({
     serverProgress,
     startDownload,
     cancelDownload,
-    formatBytes,
-    stats,
     error,
+    getMergeStats,
   } = useDownload();
   const [isCompleted, setIsCompleted] = useState(false);
+  const [started, setStarted] = useState(false);
 
+  // Auto-start for Queue
   useEffect(() => {
-    if (isActive && !downloading && !isCompleted) {
-      handleDownload();
+    if (isActive && !started && !isCompleted && !downloading) {
+      triggerDownload();
     }
-  }, [isActive, downloading, isCompleted]);
+  }, [isActive, started, isCompleted, downloading]);
 
-  const handleDownload = async () => {
-    if (downloading || isCompleted) return;
-    await startDownload(item.url, quality, "video", item.title);
-    if (!error) setIsCompleted(true);
-    onComplete(); // Notify parent to fetch next
+  // Skip already completed items
+  useEffect(() => {
+    if (isActive && isCompleted && !downloading) {
+      onComplete();
+    }
+  }, [isActive, isCompleted, downloading, onComplete]);
+
+  // Completion / Error Watcher
+  useEffect(() => {
+    if (started && !downloading) {
+      // Check if finished successfully (progress === 100)
+      if (!error && progress === 100) {
+        setIsCompleted(true);
+      } else if (isActive) {
+        // Advance queue on error/cancel
+        onComplete();
+      }
+    }
+  }, [downloading, started, error, isActive, onComplete, progress]);
+
+  const triggerDownload = () => {
+    setStarted(true);
+    startDownload(item.url, quality, "video", item.title);
   };
+
+  const mergeStats = getMergeStats
+    ? getMergeStats(item.duration)
+    : { percent: 0, eta: "...", currentSeconds: 0 };
 
   return (
     <div className={styles.playlistItem}>
@@ -222,9 +311,16 @@ const PlaylistItemRow = ({
         {downloading ? (
           <div style={{ textAlign: "right" }}>
             <div className={styles.miniProgress}>
-              {serverProgress.phase === "downloading"
-                ? `Server: ${serverProgress.percent.toFixed(0)}%`
-                : `Downloading: ${progress > 0 ? progress + "%" : "..."}`}
+              {serverProgress.downloaded === "Merging" ? (
+                <span style={{ color: "#a29bfe" }}>
+                  Merging {mergeStats.percent.toFixed(0)}% (ETA {mergeStats.eta}
+                  )
+                </span>
+              ) : serverProgress.phase === "downloading" ? (
+                `Server: ${serverProgress.percent.toFixed(0)}%`
+              ) : (
+                `Saving: ${progress > 0 ? progress + "%" : "..."}`
+              )}
             </div>
             <button
               className={`${styles.miniButton} ${styles.cancel}`}
@@ -237,11 +333,13 @@ const PlaylistItemRow = ({
         ) : isCompleted ? (
           <span style={{ color: "green", fontWeight: 600 }}>✓ Done</span>
         ) : (
-          <button className={styles.miniButton} onClick={handleDownload}>
+          <button className={styles.miniButton} onClick={triggerDownload}>
             Download
           </button>
         )}
-        {error && <div style={{ color: "red", fontSize: "0.8rem" }}>Error</div>}
+        {error && (
+          <div style={{ color: "red", fontSize: "0.8rem" }}>{error}</div>
+        )}
       </div>
     </div>
   );
@@ -427,7 +525,7 @@ export default function Home() {
               <div className={styles.progressContainer}>
                 {/* Phase 1: Server Download */}
                 {singleDownload.serverProgress.phase === "downloading" &&
-                  singleDownload.serverProgress.downloaded !== "Converting" && (
+                  singleDownload.serverProgress.downloaded !== "Merging" && (
                     <div className={styles.phaseInfo}>
                       <h4>Downloading to Server...</h4>
                       <div className={styles.progressBar}>
@@ -450,19 +548,45 @@ export default function Home() {
                     </div>
                   )}
 
-                {/* Phase 2: Converting (4K HEVC encoding) */}
-                {singleDownload.serverProgress.downloaded === "Converting" && (
-                  <div className={styles.phaseInfo}>
-                    <h4>🎬 Converting Video...</h4>
-                    <div className={styles.progressBar}>
-                      <div className={styles.progressFillIndeterminate} />
-                    </div>
-                    <div className={styles.progressStats}>
-                      <span>{singleDownload.serverProgress.speed}</span>
-                      <span>{singleDownload.serverProgress.total}</span>
-                    </div>
-                  </div>
-                )}
+                {/* Phase 2: Processing (Merging/Converting) */}
+                {singleDownload.serverProgress.downloaded === "Merging" &&
+                  (() => {
+                    const duration = metadata?.duration || 0;
+                    const stats = singleDownload.getMergeStats?.(duration) || {
+                      percent: 0,
+                      eta: "Calculated...",
+                      currentSeconds: 0,
+                    };
+
+                    return (
+                      <div className={styles.phaseInfo}>
+                        <h4>
+                          🎬 Merging Video...{" "}
+                          {stats.percent > 0 &&
+                            `(${stats.percent.toFixed(0)}%)`}
+                        </h4>
+                        <div className={styles.progressBar}>
+                          <div
+                            className={
+                              stats.percent > 0
+                                ? styles.progressFill
+                                : styles.progressFillIndeterminate
+                            }
+                            style={{
+                              width:
+                                stats.percent > 0
+                                  ? `${stats.percent}%`
+                                  : undefined,
+                            }}
+                          />
+                        </div>
+                        <div className={styles.progressStats}>
+                          <span>{singleDownload.serverProgress.speed}</span>
+                          <span>ETA: {stats.eta}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                 {/* Phase 3: Streaming */}
                 {singleDownload.serverProgress.phase === "streaming" && (

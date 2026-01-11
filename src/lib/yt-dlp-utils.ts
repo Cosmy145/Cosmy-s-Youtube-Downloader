@@ -178,6 +178,7 @@ export async function downloadVideoToDisk(
     total: string;
     speed: string;
     eta: string;
+    mergedSeconds?: number;
   }) => void,
   signal?: AbortSignal
 ): Promise<{ filePath: string; fileName: string }> {
@@ -204,6 +205,14 @@ export async function downloadVideoToDisk(
     console.log("🚀 [IO Boost] Using /Volumes/RAMDisk for temporary storage");
   }
   const filePath = path.join(tempDir, fileName);
+  const progressFilePath = path.join(tempDir, `progress_${timestamp}.txt`);
+
+  // Initialize progress file
+  try {
+    fs.writeFileSync(progressFilePath, "");
+  } catch (e) {
+    console.warn("Failed to create progress file", e);
+  }
 
   // Strategy: Prioritize Speed & Native Formats
   if (formatType === "audio") {
@@ -223,9 +232,10 @@ export async function downloadVideoToDisk(
   // 🎥 FFMPEG Post-Processing Rules
   // 4K (likely VP9): Convert to H.264 using hardware acceleration
   // 1080p (H.264): Stream Copy (Instant)
+  // Use file-based progress for absolute reliability (-progress [file])
   const ffmpegArgs = is4K
-    ? "ffmpeg:-progress pipe:2 -c:v h264_videotoolbox -b:v 20M -c:a aac -b:a 192k"
-    : "ffmpeg:-progress pipe:2 -c copy -bsf:a aac_adtstoasc";
+    ? `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -b:v 20M -pix_fmt yuv420p -c:a aac -b:a 192k`
+    : `ffmpeg:-progress "${progressFilePath}" -c copy -bsf:a aac_adtstoasc`;
 
   // 🚀 STABLE REMUX Configuration
   const args = [
@@ -259,13 +269,66 @@ export async function downloadVideoToDisk(
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
       signal, // Pass the abort signal
     });
+
+    // Explicitly handle abort to ensure immediate kill
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        if (!ytDlpProcess.killed) {
+          console.log("🛑 Abort signal received, force killing yt-dlp...");
+          ytDlpProcess.kill("SIGKILL");
+        }
+      });
+    }
     let outputBuffer = "";
     let isFinished = false;
     let lastError = ""; // Capture actual error message
     let ffmpegProgressBuffer: Record<string, string> = {}; // Buffer for FFmpeg progress key=value pairs
+    let avgSpeedVal = 0;
+    let avgEtaVal = 0;
+
+    // Poll progress file for FFmpeg stats (Bypasses yt-dlp suppression)
+    const progressInterval = setInterval(() => {
+      if (!fs.existsSync(progressFilePath)) return;
+      try {
+        const content = fs.readFileSync(progressFilePath, "utf8");
+        const lines = content.split("\n");
+        const stats: Record<string, string> = {};
+
+        // Process all lines to get latest state
+        for (const line of lines) {
+          const [k, v] = line.split("=");
+          if (k && v) stats[k.trim()] = v.trim();
+        }
+
+        if (stats.out_time && onProgress) {
+          const timeParts = stats.out_time.split(".")[0].split(":").map(Number);
+          let seconds = 0;
+          if (timeParts.length === 3) {
+            seconds = timeParts[0] * 3600 + timeParts[1] * 60 + timeParts[2];
+          } else if (timeParts.length === 2) {
+            seconds = timeParts[0] * 60 + timeParts[1];
+          }
+
+          onProgress({
+            percent: 100,
+            downloaded: "Merging",
+            total: `${stats.out_time.split(".")[0]} @ ${stats.speed || "1x"}`,
+            speed: `${stats.fps || 0} fps`,
+            eta: "Merging...",
+            mergedSeconds: seconds,
+          });
+        }
+      } catch (e) {}
+    }, 1000);
 
     // Helper to finish safely
     const finish = (err?: Error) => {
+      clearInterval(progressInterval);
+      if (fs.existsSync(progressFilePath)) {
+        try {
+          fs.unlinkSync(progressFilePath);
+        } catch (e) {}
+      }
       if (isFinished) return;
       isFinished = true;
       if (err) reject(err);
@@ -294,6 +357,20 @@ export async function downloadVideoToDisk(
       for (const line of lines) {
         if (!line.trim()) continue;
 
+        // Verify post-processing start immediately
+        if (
+          (line.includes("[Merger]") || line.includes("[Fixup")) &&
+          onProgress
+        ) {
+          onProgress({
+            percent: 100,
+            downloaded: "Merging",
+            total: "Processing...",
+            speed: "-",
+            eta: "...",
+          });
+        }
+
         // Check if this is a line we should suppress
         const isDownloadProgress =
           line.includes("[download]") && line.includes("%");
@@ -306,7 +383,8 @@ export async function downloadVideoToDisk(
         }
 
         // Parse FFmpeg progress in key=value format (from -progress pipe:2)
-        const ffmpegKeyValue = line.match(/^(\w+)=(.+)$/);
+        // Matches "key=value", "key= value", "key = value"
+        const ffmpegKeyValue = line.trim().match(/^(\w+)\s*=\s*(.+)$/);
         if (ffmpegKeyValue) {
           const [, key, value] = ffmpegKeyValue;
           ffmpegProgressBuffer[key] = value;
@@ -320,14 +398,14 @@ export async function downloadVideoToDisk(
 
             onProgress({
               percent: 100,
-              downloaded: "Converting",
+              downloaded: "Merging",
               total: `${outTime} @ ${speed}`,
               speed: `${fps} fps`,
-              eta: "Converting...",
+              eta: "Merging...",
             });
 
             console.log(
-              `🎬 Converting | Frame: ${frame} | ${fps} fps | Time: ${outTime} | Speed: ${speed}`
+              `🎬 Merging | Frame: ${frame} | ${fps} fps | Time: ${outTime} | Speed: ${speed}`
             );
 
             // Clear buffer for next progress update
@@ -356,7 +434,7 @@ export async function downloadVideoToDisk(
         );
 
         if (stdMatch && onProgress) {
-          const [, percent, total, speed, eta = "00:00"] = stdMatch;
+          const [, percent, total, speedStr, etaStr = "00:00"] = stdMatch;
           const percentNum = parseFloat(percent);
 
           // Normalized total (remove ~)
@@ -372,17 +450,53 @@ export async function downloadVideoToDisk(
               totalUnit;
           }
 
+          // Smooth Speed
+          const currentSpeedVal = parseFloat(speedStr);
+          if (avgSpeedVal === 0 || isNaN(avgSpeedVal))
+            avgSpeedVal = currentSpeedVal;
+          else avgSpeedVal = 0.1 * currentSpeedVal + 0.9 * avgSpeedVal;
+          const displaySpeed = `${avgSpeedVal.toFixed(2)}${speedStr.replace(
+            /[\d.]+/,
+            ""
+          )}`;
+
+          // Smooth ETA
+          let currentEtaVal = 0;
+          if (etaStr.includes(":")) {
+            const parts = etaStr.split(":").map(Number);
+            if (parts.length === 3)
+              currentEtaVal = parts[0] * 3600 + parts[1] * 60 + parts[2];
+            else currentEtaVal = parts[0] * 60 + parts[1];
+          } else {
+            currentEtaVal = parseFloat(etaStr) || 0;
+          }
+
+          if (avgEtaVal === 0 || isNaN(avgEtaVal)) avgEtaVal = currentEtaVal;
+          else avgEtaVal = 0.1 * currentEtaVal + 0.9 * avgEtaVal;
+
+          const h = Math.floor(avgEtaVal / 3600);
+          const m = Math.floor((avgEtaVal % 3600) / 60);
+          const s = Math.floor(avgEtaVal % 60);
+          const displayEta =
+            h > 0
+              ? `${h}:${m.toString().padStart(2, "0")}:${s
+                  .toString()
+                  .padStart(2, "0")}`
+              : `${m.toString().padStart(2, "0")}:${s
+                  .toString()
+                  .padStart(2, "0")}`;
+
           onProgress({
             percent: percentNum,
             downloaded,
             total: cleanTotal,
-            speed,
-            eta,
+            speed: displaySpeed,
+            eta: displayEta,
           });
 
           // Log real-time (no throttle) with cleaner format
           console.log(
-            `${percent}% | ${speed} | ${downloaded}/${cleanTotal} | ETA: ${eta}`
+            `${percent}% | ${displaySpeed} | ${downloaded}/${cleanTotal} | ETA: ${displayEta}`
           );
         } else if (ariaMatch && onProgress) {
           const [, downloaded, total, percentStrRaw, speed, eta = "unknown"] =
@@ -427,13 +541,13 @@ export async function downloadVideoToDisk(
           // FFmpeg conversion/merge progress (single-line fallback)
           const [, frame, fps, time, speed] = ffmpegMatch;
 
-          // Show as "Converting" phase in UI
+          // Show as "Merging" phase in UI
           onProgress({
             percent: 100, // Keep at 100% since download is done
-            downloaded: "Converting",
+            downloaded: "Merging",
             total: `${time} @ ${speed}x`,
             speed: `${fps} fps`,
-            eta: "Converting...",
+            eta: "Merging...",
           });
 
           // Log FFmpeg progress to terminal
@@ -463,6 +577,11 @@ export async function downloadVideoToDisk(
     ytDlpProcess.stderr?.on("data", handleOutput);
 
     ytDlpProcess.on("close", (code) => {
+      if (signal?.aborted) {
+        finish(new Error("Download aborted"));
+        return;
+      }
+
       if (code === 0) {
         console.log(`✓ Download complete: ${filePath}`);
         finish();
