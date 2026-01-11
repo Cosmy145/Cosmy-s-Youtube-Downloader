@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
-import { downloadVideoToDisk } from "@/lib/yt-dlp-utils";
-import { createReadStream, statSync, unlinkSync } from "fs";
+import {
+  downloadVideoToDisk,
+  cleanupDownloadArtifacts,
+} from "@/lib/yt-dlp-utils";
+import { createReadStream, statSync } from "fs";
 
 // Store active downloads with their progress
 const activeDownloads = new Map<string, any>();
@@ -43,7 +46,8 @@ async function performDownload(
           status: progress.downloaded === "Merging" ? "merging" : "downloading",
         });
       },
-      controller.signal
+      controller.signal,
+      downloadId
     );
     filePath = downloadedFile;
 
@@ -77,17 +81,7 @@ async function performDownload(
           // Delayed cleanup to ensure SSE reads the "streaming" status
           setTimeout(() => {
             activeDownloads.delete(downloadId);
-            if (filePath) {
-              try {
-                unlinkSync(filePath);
-                console.log(`[${downloadId}] ✓ Cleaned up temp file`);
-              } catch (err) {
-                console.error(
-                  `[${downloadId}] Failed to delete temp file`,
-                  err
-                );
-              }
-            }
+            cleanupDownloadArtifacts(downloadId);
           }, 2000); // 2 second delay for SSE to close gracefully
         });
 
@@ -95,30 +89,14 @@ async function performDownload(
           console.error(`[${downloadId}] File stream error:`, error);
           controller.error(error);
           activeDownloads.delete(downloadId);
-          if (filePath) {
-            try {
-              unlinkSync(filePath);
-            } catch (err) {
-              console.error(
-                `[${downloadId}] Failed to delete temp file on error`
-              );
-            }
-          }
+          cleanupDownloadArtifacts(downloadId);
         });
       },
       cancel() {
         console.log(`[${downloadId}] Stream cancelled by client`);
         fileStream.destroy();
         activeDownloads.delete(downloadId);
-        if (filePath) {
-          try {
-            unlinkSync(filePath);
-          } catch (err) {
-            console.error(
-              `[${downloadId}] Failed to delete temp file on cancel`
-            );
-          }
-        }
+        cleanupDownloadArtifacts(downloadId);
       },
     });
 
@@ -160,13 +138,7 @@ async function performDownload(
     }
 
     activeDownloads.delete(downloadId);
-    if (filePath) {
-      try {
-        unlinkSync(filePath);
-      } catch (err) {
-        console.error(`[${downloadId}] Failed to delete temp file on error`);
-      }
-    }
+    cleanupDownloadArtifacts(downloadId);
 
     return new Response(
       JSON.stringify({
@@ -317,7 +289,3 @@ export async function GET(request: NextRequest) {
     },
   });
 }
-
-// DELETE endpoint to cancel a download
-
-export const maxDuration = 300; // 5 minutes

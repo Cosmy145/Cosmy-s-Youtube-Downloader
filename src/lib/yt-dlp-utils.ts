@@ -180,7 +180,8 @@ export async function downloadVideoToDisk(
     eta: string;
     mergedSeconds?: number;
   }) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  downloadId?: string
 ): Promise<{ filePath: string; fileName: string }> {
   const path = await import("path");
   const os = await import("os");
@@ -188,13 +189,14 @@ export async function downloadVideoToDisk(
 
   let formatString: string;
   const timestamp = Date.now();
+  const id = downloadId || `download_${timestamp}`;
 
   // Determine Extension: Always MP4 for compatibility (even for 4K converted files)
   const is4K =
     formatType === "video" && (quality === "best" || quality === "2160p");
   const ext = formatType === "audio" ? "mp3" : "mp4";
 
-  const fileName = `download_${timestamp}.${ext}`;
+  const fileName = `${id}.${ext}`;
 
   // ⚡️ RAM Disk Optimization:
   // Check for specialized RAM volume to bypass IO bottlenecks
@@ -205,7 +207,7 @@ export async function downloadVideoToDisk(
     console.log("🚀 [IO Boost] Using /Volumes/RAMDisk for temporary storage");
   }
   const filePath = path.join(tempDir, fileName);
-  const progressFilePath = path.join(tempDir, `progress_${timestamp}.txt`);
+  const progressFilePath = path.join(tempDir, `progress_${id}.txt`);
 
   // Initialize progress file
   try {
@@ -614,5 +616,41 @@ export async function getVideoFilename(url: string): Promise<string> {
     return stdout.trim();
   } catch (error) {
     return "video.mp4";
+  }
+}
+
+/**
+ * Cleans up all files associated with a specific download ID
+ */
+export function cleanupDownloadArtifacts(downloadId: string) {
+  const os = require("os");
+  const path = require("path");
+  const fs = require("fs");
+
+  const ramDisk = "/Volumes/RAMDisk";
+  let tempDir = os.tmpdir();
+  if (fs.existsSync(ramDisk)) {
+    tempDir = ramDisk;
+  }
+
+  console.log(`[Cleanup] Scanning temp dir for artifacts: ${downloadId}`);
+
+  try {
+    const files = fs.readdirSync(tempDir);
+    if (!downloadId) return;
+
+    for (const file of files) {
+      if (file.includes(downloadId)) {
+        const fullPath = path.join(tempDir, file);
+        try {
+          fs.unlinkSync(fullPath);
+          console.log(`[Cleanup] Deleted: ${file}`);
+        } catch (e) {
+          console.warn(`[Cleanup] Failed to delete ${file}`, e);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Cleanup] Error scanning directory:", err);
   }
 }
