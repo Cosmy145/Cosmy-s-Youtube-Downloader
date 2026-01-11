@@ -1,9 +1,26 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import styles from "./page.module.css";
+import {
+  Container,
+  Box,
+  Typography,
+  Paper,
+  TextField,
+  InputBase,
+  Button,
+  Alert,
+  CircularProgress,
+} from "@mui/material";
+import SearchIcon from "@mui/icons-material/Search";
+import { VideoMetadataCard } from "@/components/VideoMetadataCard";
+import { QualityTable } from "@/components/QualityTable";
+import { DetailedProgressBar } from "@/components/DetailedProgressBar";
+import { PlaylistControls } from "@/components/PlaylistControls";
+import { PlaylistItemAccordion } from "@/components/PlaylistItemAccordion";
 import type { VideoMetadata, PlaylistItem, PlaylistMetadata } from "@/types";
 
+// --- Hook Definition (kept inline for simplicity as requested, but cleaned up) ---
 const useDownload = () => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -15,23 +32,45 @@ const useDownload = () => {
   const downloadIdRef = useRef<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  const formatBytes = (bytes: number, decimals = 2) => {
-    if (!+bytes) return "0 Bytes";
-    const k = 1024;
-    const dm = decimals < 0 ? 0 : decimals;
-    const sizes = [
-      "Bytes",
-      "KiB",
-      "MiB",
-      "GiB",
-      "TiB",
-      "PiB",
-      "EiB",
-      "ZiB",
-      "YiB",
-    ];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  // Helper to extract stats
+  const getMergeStats = (duration: number) => {
+    let currentSeconds = 0;
+    if (serverProgress?.mergedSeconds !== undefined) {
+      currentSeconds = serverProgress.mergedSeconds;
+    } else if (
+      typeof serverProgress?.total === "string" &&
+      serverProgress.total.includes("@")
+    ) {
+      try {
+        const timeStr = serverProgress.total.split("@")[0].trim();
+        const parts = timeStr.split(":").map((p: string) => parseFloat(p));
+        if (parts.length === 3)
+          currentSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        else if (parts.length === 2) currentSeconds = parts[0] * 60 + parts[1];
+      } catch (e) {}
+    }
+
+    const percent =
+      duration > 0
+        ? Math.min(100, Math.max(0, (currentSeconds / duration) * 100))
+        : 0;
+
+    let eta = "...";
+    if (duration > 0 && currentSeconds > 0) {
+      const remaining = duration - currentSeconds;
+      let speedVal = 1;
+      if (serverProgress?.total) {
+        const match = (serverProgress.total as string).match(/@\s*([\d.]+)x/);
+        if (match) speedVal = parseFloat(match[1]);
+      }
+      if (speedVal > 0) {
+        const etaSeconds = remaining / speedVal;
+        const m = Math.floor(etaSeconds / 60);
+        const s = Math.floor(etaSeconds % 60);
+        eta = `${m}:${s.toString().padStart(2, "0")}`;
+      }
+    }
+    return { percent, eta, currentSeconds };
   };
 
   const startDownload = useCallback(
@@ -55,20 +94,14 @@ const useDownload = () => {
       let isCompleted = false;
 
       try {
-        // 1. Start listening for progress via SSE
         eventSource = new EventSource(`/api/download?id=${downloadId}`);
         eventSourceRef.current = eventSource;
-
         eventSource.onmessage = (e) => {
           if (isCompleted) return;
           try {
             const d = JSON.parse(e.data);
             setServerProgress({ ...d, phase: d.status || "downloading" });
-
-            // Keep SSE open during conversion - only close when truly done
-            // The conversion/merge phase sends percent=100 with downloaded="Merging"
             if (d.status === "streaming" && d.downloaded !== "Merging") {
-              // Browser is receiving the file now - we're truly done
               isCompleted = true;
               setProgress(100);
               setDownloading(false);
@@ -76,9 +109,7 @@ const useDownload = () => {
             }
           } catch (err) {}
         };
-
         eventSource.onerror = () => {
-          // SSE connection closed or failed - clean up UI
           if (!isCompleted) {
             isCompleted = true;
             setDownloading(false);
@@ -86,7 +117,6 @@ const useDownload = () => {
           }
         };
 
-        // 2. Trigger Direct Download (Browser Native)
         const params = new URLSearchParams({
           url,
           quality,
@@ -95,19 +125,14 @@ const useDownload = () => {
         });
         if (title) params.append("title", title);
 
-        // Use hidden iframe to trigger download so errors don't navigate page away
         const iframe = document.createElement("iframe");
         iframe.style.display = "none";
         iframe.src = `/api/download?${params.toString()}`;
         document.body.appendChild(iframe);
 
-        // Cleanup iframe after a long delay (enough for any download to start streaming)
-        // Removing it too early cancels the request!
         setTimeout(() => {
-          if (document.body.contains(iframe)) {
-            document.body.removeChild(iframe);
-          }
-        }, 600000); // 10 minutes
+          if (document.body.contains(iframe)) document.body.removeChild(iframe);
+        }, 600000);
       } catch (err: any) {
         setError(err.message);
         setDownloading(false);
@@ -119,21 +144,17 @@ const useDownload = () => {
 
   const cancelDownload = useCallback(async () => {
     if (!downloadIdRef.current) return;
-
     try {
-      // Cancel on server
       await fetch(`/api/download?id=${downloadIdRef.current}`, {
         method: "DELETE",
       });
     } catch (err) {
-      console.error("Failed to cancel download:", err);
+      console.error(err);
     } finally {
-      // Cleanup local state
       setDownloading(false);
       setProgress(-1);
       setServerProgress({});
       downloadIdRef.current = null;
-
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
@@ -141,82 +162,14 @@ const useDownload = () => {
     }
   }, []);
 
-  const stats =
-    serverProgress && (serverProgress.speed || serverProgress.total)
-      ? {
-          speed: serverProgress.speed || "0MB/s",
-          eta: serverProgress.eta || "00:00",
-          total: serverProgress.total || "0MB",
-          downloaded: serverProgress.downloaded || "0MB",
-          percent: serverProgress.percent || 0,
-        }
-      : null;
-
-  const getMergeStats = (duration: number) => {
-    let currentSeconds = 0;
-
-    // Robust time retrieval
-    if (serverProgress?.mergedSeconds !== undefined) {
-      currentSeconds = serverProgress.mergedSeconds;
-    } else if (
-      serverProgress?.total &&
-      typeof serverProgress.total === "string" &&
-      serverProgress.total.includes("@")
-    ) {
-      try {
-        const timeStr = serverProgress.total.split("@")[0].trim();
-        const parts = timeStr.split(":").map((p) => parseFloat(p));
-        if (parts.length === 3)
-          currentSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
-        else if (parts.length === 2) currentSeconds = parts[0] * 60 + parts[1];
-      } catch (e) {}
-    }
-
-    const percent =
-      duration > 0
-        ? Math.min(100, Math.max(0, (currentSeconds / duration) * 100))
-        : 0;
-
-    // Calculate ETA
-    let eta = "Computing...";
-    if (duration > 0 && currentSeconds > 0) {
-      const remaining = duration - currentSeconds;
-      // Parse speed
-      let speedVal = 1;
-      if (serverProgress?.speed) {
-        // "1.57x" or "1.57 fps" (wait fps is diff)
-        // serverProgress.total usually has speed "1.57x" in the string we construct in backend!
-        // But serverProgress.speed is "xx fps".
-        // In yt-dlp-utils, we send: total: `... @ 1.57x`, speed: `xx fps`.
-        // So speed in 'x' is actually in the 'total' string or needs to be parsed?
-
-        // Let's parse speed from total string: "00:00:04 @ 1.57x"
-        const totalStr = serverProgress.total as string;
-        const match = totalStr.match(/@\s*([\d.]+)x/);
-        if (match) speedVal = parseFloat(match[1]);
-      }
-
-      if (speedVal > 0) {
-        const etaSeconds = remaining / speedVal;
-        const m = Math.floor(etaSeconds / 60);
-        const s = Math.floor(etaSeconds % 60);
-        eta = `${m}:${s.toString().padStart(2, "0")}`;
-      }
-    }
-
-    return { percent, eta, currentSeconds };
-  };
-
   return {
     downloading,
-    progress,
     serverProgress,
     error,
     startDownload,
     cancelDownload,
-    formatBytes,
-    stats,
     getMergeStats,
+    progress,
   };
 };
 
@@ -227,121 +180,88 @@ const formatDuration = (seconds?: number) => {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 };
 
-interface PlaylistItemRowProps {
-  item: PlaylistItem;
-  index: number;
-  isActive: boolean;
-  onComplete: () => void;
-  quality: string;
-}
-
-const PlaylistItemRow = ({
+// --- Sub-component for Playlist Item Logic ---
+const PlaylistRowItem = ({
   item,
   index,
   isActive,
   onComplete,
-  quality,
-}: PlaylistItemRowProps) => {
-  const {
-    downloading,
-    progress,
-    serverProgress,
-    startDownload,
-    cancelDownload,
-    error,
-    getMergeStats,
-  } = useDownload();
-  const [isCompleted, setIsCompleted] = useState(false);
-  const [started, setStarted] = useState(false);
+  defaultQuality,
+}: {
+  item: PlaylistItem;
+  index: number;
+  isActive: boolean;
+  onComplete: () => void;
+  defaultQuality: string;
+}) => {
+  const dl = useDownload();
+  const [status, setStatus] = useState<
+    "idle" | "downloading" | "completed" | "error"
+  >("idle");
+  const [expanded, setExpanded] = useState(false);
 
-  // Auto-start for Queue
+  // Auto-start queue logic
   useEffect(() => {
-    if (isActive && !started && !isCompleted && !downloading) {
-      triggerDownload();
+    if (isActive && status === "idle") {
+      setStatus("downloading");
+      dl.startDownload(item.url, defaultQuality, "video", item.title).catch(
+        () => setStatus("error")
+      );
     }
-  }, [isActive, started, isCompleted, downloading]);
+  }, [isActive, status, item.url, defaultQuality, item.title, dl]);
 
-  // Skip already completed items
+  // Completion watcher
   useEffect(() => {
-    if (isActive && isCompleted && !downloading) {
+    if (status === "downloading" && dl.progress === 100) {
+      setStatus("completed");
       onComplete();
+    } else if (status === "downloading" && dl.error) {
+      setStatus("error");
+      onComplete(); // Advance even on error
     }
-  }, [isActive, isCompleted, downloading, onComplete]);
+  }, [dl.progress, dl.error, status, onComplete]);
 
-  // Completion / Error Watcher
-  useEffect(() => {
-    if (started && !downloading) {
-      // Check if finished successfully (progress === 100)
-      if (!error && progress === 100) {
-        setIsCompleted(true);
-      } else if (isActive) {
-        // Advance queue on error/cancel
-        onComplete();
-      }
-    }
-  }, [downloading, started, error, isActive, onComplete, progress]);
-
-  const triggerDownload = () => {
-    setStarted(true);
-    startDownload(item.url, quality, "video", item.title);
+  // Manual Download Trigger
+  const handleManualDownload = (q: string) => {
+    setStatus("downloading");
+    dl.startDownload(item.url, q, "video", item.title);
   };
 
-  const mergeStats = getMergeStats
-    ? getMergeStats(item.duration)
-    : { percent: 0, eta: "...", currentSeconds: 0 };
+  // Stats Calculation
+  const mergeStats = dl.getMergeStats(item.duration);
+  const displayPercent =
+    dl.serverProgress.downloaded === "Merging"
+      ? mergeStats.percent
+      : dl.serverProgress.percent;
+  const displayEta =
+    dl.serverProgress.downloaded === "Merging"
+      ? mergeStats.eta
+      : dl.serverProgress.eta;
+
+  // Construct displayStats object for accordion
+  const displayStatsObj = { percent: displayPercent, eta: displayEta };
+
+  const qualities = [
+    { quality: "best", hasAudio: true },
+    { quality: "1080p", hasAudio: true },
+    { quality: "720p", hasAudio: true },
+    { quality: "audio", hasAudio: true },
+  ];
 
   return (
-    <div className={styles.playlistItem}>
-      <div className={styles.itemIndex}>{index + 1}</div>
-      {item.thumbnail && (
-        <img
-          src={item.thumbnail}
-          alt={item.title}
-          className={styles.itemThumbnail}
-        />
-      )}
-      <div className={styles.itemInfo}>
-        <span className={styles.itemTitle}>{item.title}</span>
-        <div className={styles.itemMeta}>
-          {item.uploader} • {formatDuration(item.duration)}
-        </div>
-      </div>
-
-      <div className={styles.itemAction}>
-        {downloading ? (
-          <div style={{ textAlign: "right" }}>
-            <div className={styles.miniProgress}>
-              {serverProgress.downloaded === "Merging" ? (
-                <span style={{ color: "#a29bfe" }}>
-                  Merging {mergeStats.percent.toFixed(0)}% (ETA {mergeStats.eta}
-                  )
-                </span>
-              ) : serverProgress.phase === "downloading" ? (
-                `Server: ${serverProgress.percent.toFixed(0)}%`
-              ) : (
-                `Saving: ${progress > 0 ? progress + "%" : "..."}`
-              )}
-            </div>
-            <button
-              className={`${styles.miniButton} ${styles.cancel}`}
-              onClick={cancelDownload}
-              style={{ marginTop: "4px" }}
-            >
-              Cancel
-            </button>
-          </div>
-        ) : isCompleted ? (
-          <span style={{ color: "green", fontWeight: 600 }}>✓ Done</span>
-        ) : (
-          <button className={styles.miniButton} onClick={triggerDownload}>
-            Download
-          </button>
-        )}
-        {error && (
-          <div style={{ color: "red", fontSize: "0.8rem" }}>{error}</div>
-        )}
-      </div>
-    </div>
+    <PlaylistItemAccordion
+      item={item}
+      index={index}
+      expanded={expanded}
+      onExpand={() => setExpanded(!expanded)}
+      qualities={qualities}
+      onDownload={handleManualDownload}
+      status={status}
+      progressObj={dl.serverProgress}
+      displayStats={displayStatsObj}
+      onCancel={dl.cancelDownload}
+      isQueueRunning={isActive && status === "downloading"}
+    />
   );
 };
 
@@ -349,62 +269,31 @@ export default function Home() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [metadata, setMetadata] = useState<
-    (VideoMetadata & { availableQualities: { quality: string }[] }) | null
+    | (VideoMetadata & {
+        availableQualities?: { quality: string; hasAudio: boolean }[];
+      })
+    | null
   >(null);
   const [error, setError] = useState("");
-  const [selectedQuality, setSelectedQuality] = useState("best");
 
-  // Single Video Hook
+  // Single Video State
   const singleDownload = useDownload();
 
-  // Playlist Auto-Download State
-  // Playlist Queue State
+  // Playlist State
+  const [playlistQuality, setPlaylistQuality] = useState("best");
   const [queueIndex, setQueueIndex] = useState(-1);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
-  const [playlistQuality, setPlaylistQuality] = useState("best");
-  const PLAYLIST_QUALITIES = [
-    "best",
-    "2160p",
-    "1440p",
-    "1080p",
-    "720p",
-    "480p",
-    "360p",
-  ];
-
-  const startQueue = () => {
-    setQueueIndex(0);
-    setIsQueueRunning(true);
-  };
-
-  const stopQueue = () => {
-    setIsQueueRunning(false);
-    setQueueIndex(-1);
-  };
-
-  const handleQueueComplete = () => {
-    if (isQueueRunning && metadata?.type === "playlist") {
-      setQueueIndex((prev) => {
-        const next = prev + 1;
-        if (next >= metadata.items.length) {
-          setIsQueueRunning(false);
-          return -1;
-        }
-        return next;
-      });
-    }
-  };
 
   const fetchVideoInfo = async () => {
     if (!url) {
-      setError("Please enter a YouTube URL");
+      setError("Please enter URL");
       return;
     }
-
     setLoading(true);
     setError("");
     setMetadata(null);
-    stopQueue();
+    setIsQueueRunning(false);
+    setQueueIndex(-1); // Reset playlist state
 
     try {
       const response = await fetch("/api/metadata", {
@@ -412,298 +301,225 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
-
       const data = await response.json();
-
-      if (data.success) {
-        setMetadata(data.data);
-        if (
-          data.data.availableQualities &&
-          data.data.availableQualities.length > 0
-        ) {
-          setSelectedQuality(data.data.availableQualities[0].quality);
-        }
-      } else {
-        setError(data.error || "Failed to fetch video info");
-      }
+      if (data.success) setMetadata(data.data);
+      else setError(data.error || "Failed to fetch info");
     } catch (err) {
-      setError("Network error. Please try again.");
-      console.error(err);
+      setError("Network error");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSingleDownload = () => {
+  // Single Video Download Handler
+  const handleSingleDownload = (quality: string) => {
     if (!metadata) return;
     singleDownload.startDownload(
       metadata.original_url || url,
-      selectedQuality,
+      quality,
       "video",
       metadata.title
     );
   };
 
-  // Determine view type
+  // Playlist Queue Handlers
+  const startQueue = () => {
+    setQueueIndex(0);
+    setIsQueueRunning(true);
+  };
+  const stopQueue = () => {
+    setIsQueueRunning(false);
+    setQueueIndex(-1);
+  };
+  const handleQueueComplete = () => {
+    if (!isQueueRunning || !metadata || metadata.type !== "playlist") return;
+    setQueueIndex((prev) => {
+      const next = prev + 1;
+      if (next >= metadata.items.length) {
+        setIsQueueRunning(false);
+        return -1;
+      }
+      return next;
+    });
+  };
+
   const isPlaylist = metadata?.type === "playlist";
 
+  // Single Video Stats
+  const getDuration = () => {
+    if (!metadata) return 0;
+    return "duration" in metadata
+      ? (metadata as import("@/types").SingleVideoMetadata).duration
+      : 0;
+  };
+  const svMergeStats = singleDownload.getMergeStats(getDuration());
+  const svDisplayPercent =
+    singleDownload.serverProgress.downloaded === "Merging"
+      ? svMergeStats.percent
+      : singleDownload.serverProgress.percent;
+  const svDisplayEta =
+    singleDownload.serverProgress.downloaded === "Merging"
+      ? svMergeStats.eta
+      : singleDownload.serverProgress.eta;
+
   return (
-    <div className={styles.container}>
-      <div className={styles.card}>
-        <h1 className={styles.title}>YouTube Downloader</h1>
-        <p className={styles.subtitle}>
-          Download Videos & Playlists in High Quality
-        </p>
+    <Container maxWidth="lg" sx={{ py: 8 }}>
+      <Box sx={{ textAlign: "center", mb: 8 }}>
+        <Typography
+          variant="h2"
+          sx={{
+            fontWeight: 800,
+            background:
+              "linear-gradient(135deg, #a29bfe 0%, #6c5ce7 50%, #00d2d3 100%)",
+            backgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            fontSize: { xs: "2.5rem", md: "4rem" },
+            mb: 2,
+            letterSpacing: "-0.02em",
+          }}
+        >
+          YouTube Downloader
+        </Typography>
+        <Typography
+          variant="h5"
+          color="text.secondary"
+          sx={{ fontWeight: 400, opacity: 0.8 }}
+        >
+          Premium Quality Downloads • Playlists • 4K Support
+        </Typography>
+      </Box>
 
-        <div className={styles.inputGroup}>
-          <input
-            type="text"
-            className={styles.input}
-            placeholder="Paste YouTube Video or Playlist URL..."
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && fetchVideoInfo()}
+      <Paper
+        elevation={0}
+        component="form"
+        sx={{
+          p: "8px 16px",
+          display: "flex",
+          alignItems: "center",
+          width: "100%",
+          maxWidth: 800,
+          mx: "auto",
+          mb: 6,
+          background: "rgba(255,255,255,0.05)",
+          backdropFilter: "blur(20px)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: "50px",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+          transition: "all 0.3s ease",
+          "&:focus-within": {
+            background: "rgba(255,255,255,0.08)",
+            borderColor: "#a29bfe",
+            boxShadow: "0 12px 48px rgba(162, 155, 254, 0.2)",
+          },
+        }}
+        onSubmit={(e: any) => {
+          e.preventDefault();
+          fetchVideoInfo();
+        }}
+      >
+        <InputBase
+          sx={{
+            ml: 2,
+            flex: 1,
+            fontSize: "1.1rem",
+            color: "#fff",
+            "& .MuiInputBase-input::placeholder": {
+              color: "rgba(255,255,255,0.5)",
+              opacity: 1,
+            },
+          }}
+          placeholder="Paste YouTube Video or Playlist URL..."
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          disabled={loading || singleDownload.downloading || isQueueRunning}
+        />
+        <Button
+          type="submit"
+          variant="contained"
+          onClick={fetchVideoInfo}
+          disabled={loading || singleDownload.downloading || isQueueRunning}
+          sx={{
+            borderRadius: "30px",
+            px: 4,
+            py: 1.2,
+            background: "linear-gradient(45deg, #a29bfe, #6c5ce7)",
+            boxShadow: "0 4px 15px rgba(108, 92, 231, 0.4)",
+            textTransform: "none",
+            fontSize: "1rem",
+            fontWeight: 600,
+            minWidth: "120px",
+          }}
+        >
+          {loading ? <CircularProgress size={24} color="inherit" /> : "Start"}
+        </Button>
+      </Paper>
+
+      {error && (
+        <Alert
+          severity="error"
+          sx={{ mt: 2, maxWidth: 800, mx: "auto", borderRadius: 2 }}
+        >
+          {error}
+        </Alert>
+      )}
+
+      {metadata && !isPlaylist && (
+        <Box>
+          <VideoMetadataCard
+            thumbnail={metadata.thumbnail}
+            title={metadata.title}
+            uploader={metadata.uploader}
+            duration={formatDuration(metadata.duration)}
+            viewCount={(metadata as any).view_count}
           />
-          <button
-            className={styles.fetchButton}
-            onClick={fetchVideoInfo}
-            disabled={loading}
-          >
-            {loading ? "Loading..." : "Get Info"}
-          </button>
-        </div>
 
-        {error && <div className={styles.error}>{error}</div>}
-
-        {metadata && !isPlaylist && (
-          // Single Video View
-          <div className={styles.videoInfo}>
-            <img
-              src={metadata.thumbnail}
-              alt={metadata.title}
-              className={styles.thumbnail}
+          {singleDownload.downloading ? (
+            <DetailedProgressBar
+              phase={singleDownload.serverProgress.phase}
+              downloaded={singleDownload.serverProgress.downloaded}
+              total={singleDownload.serverProgress.total || ""}
+              speed={singleDownload.serverProgress.speed || ""}
+              percent={svDisplayPercent}
+              eta={svDisplayEta}
+              onCancel={singleDownload.cancelDownload}
             />
-            <h2 className={styles.videoTitle}>{metadata.title}</h2>
-            <p className={styles.videoMeta}>
-              {metadata.uploader} • {formatDuration(metadata.duration)}
-            </p>
+          ) : (
+            <QualityTable
+              qualities={metadata.availableQualities || []}
+              onDownload={handleSingleDownload}
+            />
+          )}
+        </Box>
+      )}
 
-            <div className={styles.qualitySection}>
-              <label className={styles.label}>Select Quality:</label>
-              <select
-                className={styles.select}
-                value={selectedQuality}
-                onChange={(e) => setSelectedQuality(e.target.value)}
-              >
-                <option value="best">Best Quality</option>
-                {metadata.availableQualities.map((q) => (
-                  <option key={q.quality} value={q.quality}>
-                    {q.quality}
-                  </option>
-                ))}
-              </select>
-            </div>
+      {metadata && isPlaylist && (
+        <Box>
+          <PlaylistControls
+            title={metadata.title}
+            itemCount={(metadata as PlaylistMetadata).item_count}
+            thumbnail={metadata.thumbnail}
+            isQueueRunning={isQueueRunning}
+            onStartQueue={startQueue}
+            onStopQueue={stopQueue}
+            queueIndex={queueIndex}
+            globalQuality={playlistQuality}
+            onQualityChange={setPlaylistQuality}
+          />
 
-            {!singleDownload.downloading ? (
-              <button
-                className={styles.downloadButton}
-                onClick={handleSingleDownload}
-                disabled={singleDownload.downloading}
-              >
-                Download Video
-              </button>
-            ) : (
-              <button
-                className={styles.cancelButton}
-                onClick={singleDownload.cancelDownload}
-              >
-                Cancel Download
-              </button>
-            )}
-
-            {singleDownload.downloading && (
-              <div className={styles.progressContainer}>
-                {/* Phase 1: Server Download */}
-                {singleDownload.serverProgress.phase === "downloading" &&
-                  singleDownload.serverProgress.downloaded !== "Merging" && (
-                    <div className={styles.phaseInfo}>
-                      <h4>Downloading to Server...</h4>
-                      <div className={styles.progressBar}>
-                        <div
-                          className={styles.progressFill}
-                          style={{
-                            width: `${singleDownload.serverProgress.percent}%`,
-                          }}
-                        />
-                      </div>
-                      <div className={styles.progressStats}>
-                        <span>
-                          {singleDownload.serverProgress.percent.toFixed(1)}%
-                        </span>
-                        <span>
-                          {singleDownload.serverProgress.speed} • ETA:{" "}
-                          {singleDownload.serverProgress.eta}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                {/* Phase 2: Processing (Merging/Converting) */}
-                {singleDownload.serverProgress.downloaded === "Merging" &&
-                  (() => {
-                    const duration = metadata?.duration || 0;
-                    const stats = singleDownload.getMergeStats?.(duration) || {
-                      percent: 0,
-                      eta: "Calculated...",
-                      currentSeconds: 0,
-                    };
-
-                    return (
-                      <div className={styles.phaseInfo}>
-                        <h4>
-                          🎬 Merging Video...{" "}
-                          {stats.percent > 0 &&
-                            `(${stats.percent.toFixed(0)}%)`}
-                        </h4>
-                        <div className={styles.progressBar}>
-                          <div
-                            className={
-                              stats.percent > 0
-                                ? styles.progressFill
-                                : styles.progressFillIndeterminate
-                            }
-                            style={{
-                              width:
-                                stats.percent > 0
-                                  ? `${stats.percent}%`
-                                  : undefined,
-                            }}
-                          />
-                        </div>
-                        <div className={styles.progressStats}>
-                          <span>{singleDownload.serverProgress.speed}</span>
-                          <span>ETA: {stats.eta}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                {/* Phase 3: Streaming */}
-                {singleDownload.serverProgress.phase === "streaming" && (
-                  <div className={styles.phaseInfo}>
-                    <h4>Saving to Device...</h4>
-                    <div className={styles.progressBar}>
-                      <div
-                        className={
-                          singleDownload.progress === -1
-                            ? styles.progressFillIndeterminate
-                            : styles.progressFill
-                        }
-                        style={
-                          singleDownload.progress === -1
-                            ? {}
-                            : { width: `${singleDownload.progress}%` }
-                        }
-                      />
-                    </div>
-                    <div className={styles.progressStats}>
-                      <span>
-                        {singleDownload.progress > 0
-                          ? singleDownload.progress + "%"
-                          : "Processing..."}
-                      </span>
-                      {singleDownload.stats && (
-                        <span>
-                          {singleDownload.stats.total} •{" "}
-                          {singleDownload.stats.speed} • ETA{" "}
-                          {singleDownload.stats.eta}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {metadata && isPlaylist && (
-          // Playlist View
-          <div className={styles.playlistContainer}>
-            <div className={styles.playlistHeader}>
-              {metadata.thumbnail && (
-                <img
-                  src={metadata.thumbnail}
-                  alt={metadata.title}
-                  className={styles.playlistThumbnail}
-                />
-              )}
-              <div className={styles.playlistHeaderContent}>
-                <h2 className={styles.playlistTitle}>{metadata.title}</h2>
-                <div className={styles.playlistMeta}>
-                  {metadata.uploader} •{" "}
-                  {(metadata as PlaylistMetadata).item_count} Videos
-                </div>
-
-                <div style={{ marginBottom: "15px" }}>
-                  <span
-                    style={{
-                      fontSize: "0.9rem",
-                      marginRight: "10px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    Quality:
-                  </span>
-                  <select
-                    className={styles.select}
-                    style={{ width: "auto", padding: "6px 12px" }}
-                    value={playlistQuality}
-                    onChange={(e) => setPlaylistQuality(e.target.value)}
-                  >
-                    {PLAYLIST_QUALITIES.map((q) => (
-                      <option key={q} value={q}>
-                        {q}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {!isQueueRunning ? (
-                  <button
-                    className={styles.downloadAllButton}
-                    onClick={startQueue}
-                  >
-                    Download All Queue ({playlistQuality})
-                  </button>
-                ) : (
-                  <button
-                    className={styles.downloadAllButton}
-                    style={{ background: "#ff6b6b" }}
-                    onClick={stopQueue}
-                  >
-                    Stop Queue ({queueIndex + 1}/
-                    {(metadata as PlaylistMetadata).item_count})
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className={styles.playlistItems}>
-              {(metadata as PlaylistMetadata).items.map((item, index) => (
-                <PlaylistItemRow
-                  key={item.id}
-                  item={item}
-                  index={index}
-                  isActive={isQueueRunning && index === queueIndex}
-                  onComplete={handleQueueComplete}
-                  quality={playlistQuality}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+          <Box>
+            {(metadata as PlaylistMetadata).items.map((item, idx) => (
+              <PlaylistRowItem
+                key={item.id}
+                item={item}
+                index={idx}
+                isActive={isQueueRunning && idx === queueIndex}
+                onComplete={handleQueueComplete}
+                defaultQuality={playlistQuality}
+              />
+            ))}
+          </Box>
+        </Box>
+      )}
+    </Container>
   );
 }

@@ -72,7 +72,8 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
           duration: e.duration,
           uploader: e.uploader,
           url: e.url || `https://www.youtube.com/watch?v=${e.id}`,
-          thumbnail: e.thumbnails?.[0]?.url,
+          thumbnail:
+            e.thumbnails?.[e.thumbnails.length - 1]?.url || e.thumbnail,
         })),
       };
     }
@@ -85,7 +86,9 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
         type: "playlist",
         id: "synthetic_playlist",
         title: `Playlist (${collectedItems.length} videos)`,
-        thumbnail: first.thumbnail || first.thumbnails?.[0]?.url || "",
+        thumbnail:
+          first.thumbnails?.[first.thumbnails.length - 1]?.url ||
+          first.thumbnail,
         uploader: "Unknown",
         item_count: collectedItems.length,
         items: collectedItems.map((e: any) => ({
@@ -95,7 +98,8 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
           uploader: e.uploader || e.channel,
           url:
             e.webpage_url || e.url || `https://www.youtube.com/watch?v=${e.id}`,
-          thumbnail: e.thumbnail || e.thumbnails?.[0]?.url,
+          thumbnail:
+            e.thumbnails?.[e.thumbnails.length - 1]?.url || e.thumbnail,
         })),
         original_url: url,
       };
@@ -108,7 +112,9 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
         type: "video",
         id: metadata.id,
         title: metadata.title,
-        thumbnail: metadata.thumbnail || metadata.thumbnails?.[0]?.url,
+        thumbnail:
+          metadata.thumbnails?.[metadata.thumbnails.length - 1]?.url ||
+          metadata.thumbnail,
         duration: metadata.duration,
         uploader: metadata.uploader || metadata.channel,
         formats: metadata.formats || [],
