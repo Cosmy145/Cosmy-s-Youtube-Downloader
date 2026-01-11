@@ -183,48 +183,71 @@ export async function downloadVideoToDisk(
 ): Promise<{ filePath: string; fileName: string }> {
   const path = await import("path");
   const os = await import("os");
+  const fs = await import("fs");
 
   let formatString: string;
   const timestamp = Date.now();
-  const ext = formatType === "audio" ? "mp3" : "mp4";
-  const fileName = `download_${timestamp}.${ext}`;
-  const filePath = path.join(os.tmpdir(), fileName);
 
-  // Strategy: Get the EXACT quality requested
+  // Determine Extension: Always MP4 for compatibility (even for 4K converted files)
+  const is4K =
+    formatType === "video" && (quality === "best" || quality === "2160p");
+  const ext = formatType === "audio" ? "mp3" : "mp4";
+
+  const fileName = `download_${timestamp}.${ext}`;
+
+  // ⚡️ RAM Disk Optimization:
+  // Check for specialized RAM volume to bypass IO bottlenecks
+  let tempDir = os.tmpdir();
+  const ramDiskPath = "/Volumes/RAMDisk";
+  if (fs.existsSync(ramDiskPath)) {
+    tempDir = ramDiskPath;
+    console.log("🚀 [IO Boost] Using /Volumes/RAMDisk for temporary storage");
+  }
+  const filePath = path.join(tempDir, fileName);
+
+  // Strategy: Prioritize Speed & Native Formats
   if (formatType === "audio") {
     formatString = "bestaudio";
-  } else if (quality === "best") {
-    // Prioritize MP4/M4A (H.264/AAC) for Native compatibility without transcoding
+  } else if (is4K) {
+    // 4K Strategy: Prefer H.264/HEVC (instant remux, no heat)
+    // Falls back to VP9 (hardware conversion) if H.264/HEVC unavailable
+    // Strictly requires 2160p - won't fall back to lower resolutions
     formatString =
-      "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best";
+      "bestvideo[height=2160][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=2160][vcodec^=hev1]+bestaudio[ext=m4a]/bestvideo[height=2160]+bestaudio/bestvideo[height>=2160]+bestaudio";
   } else {
-    // Use <= to ensure we get the best quality up to the requested height
-    // Prioritize MP4 container
+    // 1080p Source: H.264 (Native Copy)
     const height = quality.replace("p", "");
     formatString = `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
   }
 
-  // 🚀 4K/Industrial Stability Configuration
+  // 🎥 FFMPEG Post-Processing Rules
+  // 4K (likely VP9): Convert to H.264 using hardware acceleration
+  // 1080p (H.264): Stream Copy (Instant)
+  const ffmpegArgs = is4K
+    ? "ffmpeg:-progress pipe:2 -c:v h264_videotoolbox -b:v 20M -c:a aac -b:a 192k"
+    : "ffmpeg:-progress pipe:2 -c copy -bsf:a aac_adtstoasc";
+
+  // 🚀 STABLE REMUX Configuration
   const args = [
     "-f",
     formatString,
     "--merge-output-format",
     ext,
 
-    // Network: Native yt-dlp parallelism (Max Speed)
+    // Network Speed: Native yt-dlp parallelism
     "-N",
     "32",
 
-    // Auth: Use local browser cookies to bypass "Sign in" check
     "--cookies-from-browser",
     "chrome",
 
-    // CPU: Zero-Loss Copy (Fast & Cool) -> Fixes "Heat" issues
+    // Post-Process (Remux)
     "--postprocessor-args",
-    "ffmpeg:-c copy -map 0 -threads 0",
+    ffmpegArgs,
 
     "-o",
     filePath,
+    "--newline", // Required for parsing
     "--no-warnings",
     "--progress", // Show progress updates
     url,
@@ -239,6 +262,7 @@ export async function downloadVideoToDisk(
     let outputBuffer = "";
     let isFinished = false;
     let lastError = ""; // Capture actual error message
+    let ffmpegProgressBuffer: Record<string, string> = {}; // Buffer for FFmpeg progress key=value pairs
 
     // Helper to finish safely
     const finish = (err?: Error) => {
@@ -250,10 +274,8 @@ export async function downloadVideoToDisk(
 
     // Listen to both stdout and stderr for progress
     const handleOutput = (data: Buffer) => {
-      // Direct stream to terminal to prevent buffering lag
-      process.stdout.write(data);
-
       const output = data.toString();
+
       // Update lastError if line looks like an error
       if (
         output.toLowerCase().includes("error") ||
@@ -272,6 +294,48 @@ export async function downloadVideoToDisk(
       for (const line of lines) {
         if (!line.trim()) continue;
 
+        // Check if this is a line we should suppress
+        const isDownloadProgress =
+          line.includes("[download]") && line.includes("%");
+        const isFFmpegProgress =
+          line.includes("frame=") && line.includes("fps=");
+
+        // Write non-progress lines to terminal (like [Merger], [info], errors, etc.)
+        if (!isDownloadProgress && !isFFmpegProgress) {
+          console.log(line);
+        }
+
+        // Parse FFmpeg progress in key=value format (from -progress pipe:2)
+        const ffmpegKeyValue = line.match(/^(\w+)=(.+)$/);
+        if (ffmpegKeyValue) {
+          const [, key, value] = ffmpegKeyValue;
+          ffmpegProgressBuffer[key] = value;
+
+          // When we see 'progress=continue', we have a complete set of progress data
+          if (key === "progress" && value === "continue" && onProgress) {
+            const frame = ffmpegProgressBuffer.frame || "0";
+            const fps = ffmpegProgressBuffer.fps || "0";
+            const outTime = ffmpegProgressBuffer.out_time || "00:00:00";
+            const speed = ffmpegProgressBuffer.speed || "0";
+
+            onProgress({
+              percent: 100,
+              downloaded: "Converting",
+              total: `${outTime} @ ${speed}`,
+              speed: `${fps} fps`,
+              eta: "Converting...",
+            });
+
+            console.log(
+              `🎬 Converting | Frame: ${frame} | ${fps} fps | Time: ${outTime} | Speed: ${speed}`
+            );
+
+            // Clear buffer for next progress update
+            ffmpegProgressBuffer = {};
+          }
+          continue;
+        }
+
         // Parse Standard yt-dlp progress:
         // [download]  45.2% of  320.10MiB at   25.04MiB/s ETA 00:12
         const stdMatch = line.match(
@@ -283,6 +347,12 @@ export async function downloadVideoToDisk(
         // Variation: [#ed4b5c 22MiB/22MiB(99%) CN:1 DL:13MiB]
         const ariaMatch = line.match(
           /\[#\w+\s+([\d.]+\w+)\/([\d.]+\w+)\(([\d.]+)%\)\s+CN:\d+\s+DL:([\d.]+\w+)(?:\s+ETA:([\w:]+))?/
+        );
+
+        // Parse FFmpeg progress (single-line format, fallback):
+        // frame= 1234 fps=60 q=28.0 size=   45056kB time=00:00:41.23 bitrate=8956.7kbits/s speed=2.0x
+        const ffmpegMatch = line.match(
+          /frame=\s*(\d+)\s+fps=\s*([\d.]+)\s+.*?time=\s*([\d:\.]+)\s+.*?speed=\s*([\d.]+)x/
         );
 
         if (stdMatch && onProgress) {
@@ -353,6 +423,23 @@ export async function downloadVideoToDisk(
               1
             )}% | ${speed}/s | ${downloaded}/${total} | ETA: ${eta}`
           );
+        } else if (ffmpegMatch && onProgress) {
+          // FFmpeg conversion/merge progress (single-line fallback)
+          const [, frame, fps, time, speed] = ffmpegMatch;
+
+          // Show as "Converting" phase in UI
+          onProgress({
+            percent: 100, // Keep at 100% since download is done
+            downloaded: "Converting",
+            total: `${time} @ ${speed}x`,
+            speed: `${fps} fps`,
+            eta: "Converting...",
+          });
+
+          // Log FFmpeg progress to terminal
+          console.log(
+            `🎬 Converting | Frame: ${frame} | ${fps} fps | Time: ${time} | Speed: ${speed}x`
+          );
         } else {
           // Debugging: Log raw line if it looks like progress but wasn't matched
           // Or if it contains any numbers and % signs to see what we missed
@@ -366,7 +453,7 @@ export async function downloadVideoToDisk(
         }
 
         // Log important messages
-        if (line.includes("[info]")) {
+        if (line.includes("[info]") || line.includes("[Merger]")) {
           console.log("yt-dlp:", line.trim());
         }
       }

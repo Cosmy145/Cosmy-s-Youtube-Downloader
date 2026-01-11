@@ -5,34 +5,16 @@ import { createReadStream, statSync, unlinkSync } from "fs";
 // Store active downloads with their progress
 const activeDownloads = new Map<string, any>();
 
-export async function POST(request: NextRequest) {
+async function performDownload(
+  url: string,
+  quality: string,
+  format: string,
+  downloadId: string,
+  title?: string
+) {
   let filePath: string | null = null;
-  let downloadId = `download_${Date.now()}`;
 
   try {
-    const body = await request.json();
-    const {
-      url,
-      quality = "best",
-      format = "video",
-      downloadId: clientDownloadId,
-    } = body;
-
-    // Use client-provided ID if available
-    if (clientDownloadId) {
-      downloadId = clientDownloadId;
-    }
-
-    if (!url) {
-      return new Response(
-        JSON.stringify({ success: false, error: "URL is required" }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
     console.log(`[${downloadId}] Starting download: ${quality} quality`);
 
     // Initialize progress tracking with AbortController
@@ -58,21 +40,26 @@ export async function POST(request: NextRequest) {
         activeDownloads.set(downloadId, {
           ...currentData,
           ...progress,
-          status: "downloading",
+          status:
+            progress.downloaded === "Converting" ? "converting" : "downloading",
         });
       },
       controller.signal
     );
     filePath = downloadedFile;
 
-    // Update status to merging/streaming
+    // Update status to streaming (file ready, sending to browser)
     const dataAfterDownload = activeDownloads.get(downloadId) || {};
     activeDownloads.set(downloadId, {
       ...dataAfterDownload,
       status: "streaming",
       percent: 100,
+      downloaded: dataAfterDownload.total || "Complete",
+      eta: "00:00",
     });
 
+    // Small delay to ensure SSE receives the status update
+    await new Promise((resolve) => setTimeout(resolve, 100));
     console.log(`[${downloadId}] Download complete, streaming to client`);
 
     // Phase 2: Get file stats and create read stream
@@ -88,16 +75,21 @@ export async function POST(request: NextRequest) {
 
         fileStream.on("end", () => {
           controller.close();
-          // Cleanup
-          activeDownloads.delete(downloadId);
-          if (filePath) {
-            try {
-              unlinkSync(filePath);
-              console.log(`[${downloadId}] ✓ Cleaned up temp file`);
-            } catch (err) {
-              console.error(`[${downloadId}] Failed to delete temp file`, err);
+          // Delayed cleanup to ensure SSE reads the "streaming" status
+          setTimeout(() => {
+            activeDownloads.delete(downloadId);
+            if (filePath) {
+              try {
+                unlinkSync(filePath);
+                console.log(`[${downloadId}] ✓ Cleaned up temp file`);
+              } catch (err) {
+                console.error(
+                  `[${downloadId}] Failed to delete temp file`,
+                  err
+                );
+              }
             }
-          }
+          }, 2000); // 2 second delay for SSE to close gracefully
         });
 
         fileStream.on("error", (error) => {
@@ -131,12 +123,32 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Return the stream with proper headers
-    const ext = format === "audio" ? "mp3" : "mp4";
+    // Determine extension from actual file
+    // Dynamic import inside async function to avoid top-level await issues if any
+    const extMatch = filePath.match(/\.([0-9a-z]+)$/i);
+    const ext = extMatch
+      ? extMatch[1].toLowerCase()
+      : format === "audio"
+      ? "mp3"
+      : "mp4";
+
+    // Sanitize title for filename
+    const safeTitle = title
+      ? title.replace(/[^\w\s\-\.]/g, "").trim()
+      : `download_${Date.now()}`;
+    const filename = safeTitle.endsWith(`.${ext}`)
+      ? safeTitle
+      : `${safeTitle}.${ext}`;
+
     return new Response(stream, {
       headers: {
-        "Content-Type": format === "audio" ? "audio/mpeg" : "video/mp4",
-        "Content-Disposition": `attachment; filename="download.${ext}"`,
+        "Content-Type":
+          ext === "mp3"
+            ? "audio/mpeg"
+            : ext === "webm"
+            ? "video/webm"
+            : "video/mp4",
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Content-Length": stats.size.toString(),
         "X-Download-Id": downloadId,
       },
@@ -171,31 +183,68 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE endpoint to cancel a download
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const {
+      url,
+      quality = "best",
+      format = "video",
+      downloadId: clientDownloadId,
+      title,
+    } = body;
+    const downloadId = clientDownloadId || `download_${Date.now()}`;
+
+    if (!url) {
+      return new Response(
+        JSON.stringify({ success: false, error: "URL is required" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    return performDownload(url, quality, format, downloadId, title);
+  } catch (e: any) {
+    return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+  }
+}
+// Cancel an active download
 export async function DELETE(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
+  const { searchParams } = new URL(request.url);
   const downloadId = searchParams.get("id");
 
   if (!downloadId) {
-    return new Response("Download ID required", { status: 400 });
+    return new Response(JSON.stringify({ error: "Download ID required" }), {
+      status: 400,
+    });
   }
 
   const download = activeDownloads.get(downloadId);
   if (download && download.controller) {
-    console.log(`[${downloadId}] Cancelling download via API`);
-    download.controller.abort(); // This triggers the abort signal in spawn
+    console.log(`[${downloadId}] Aborting download via API request`);
+    download.controller.abort(); // Kills yt-dlp process
     activeDownloads.delete(downloadId);
-    return new Response("Cancelled", { status: 200 });
+    return new Response(JSON.stringify({ success: true }));
   }
 
-  return new Response("Download not found", { status: 404 });
+  return new Response(JSON.stringify({ error: "Download not found" }), {
+    status: 404,
+  });
 }
-
-// GET endpoint for Server-Sent Events progress updates
+// GET endpoint (Handles both SSE and Direct Download)
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const downloadId = searchParams.get("id");
+  const url = searchParams.get("url");
 
+  // MODE 1: Direct File Download (Browser Navigation)
+  if (url && downloadId) {
+    const quality = searchParams.get("quality") || "best";
+    const format = searchParams.get("format") || "video";
+    const title = searchParams.get("title") || undefined;
+    return performDownload(url, quality, format, downloadId, title);
+  }
+
+  // MODE 2: SSE Progress Updates
   if (!downloadId) {
     return new Response("Download ID required", { status: 400 });
   }
@@ -222,8 +271,11 @@ export async function GET(request: NextRequest) {
             const data = `data: ${JSON.stringify(safeProgress)}\n\n`;
             controller.enqueue(encoder.encode(data));
 
-            // If download is complete, close the stream
-            if (progress.status === "complete" || progress.percent === 100) {
+            // If download is complete or streaming to browser, close the SSE stream
+            if (
+              progress.status === "complete" ||
+              progress.status === "streaming"
+            ) {
               isActive = false;
               clearInterval(interval);
               try {
@@ -266,5 +318,7 @@ export async function GET(request: NextRequest) {
     },
   });
 }
+
+// DELETE endpoint to cancel a download
 
 export const maxDuration = 300; // 5 minutes

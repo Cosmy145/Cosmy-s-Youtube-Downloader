@@ -12,7 +12,8 @@ const useDownload = () => {
     phase: "idle",
   });
   const [error, setError] = useState("");
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const downloadIdRef = useRef<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const formatBytes = (bytes: number, decimals = 2) => {
     if (!+bytes) return "0 Bytes";
@@ -48,79 +49,86 @@ const useDownload = () => {
       const downloadId = `dl_${Date.now()}_${Math.random()
         .toString(36)
         .substr(2, 5)}`;
-      abortControllerRef.current = new AbortController();
+      downloadIdRef.current = downloadId;
 
       let eventSource: EventSource | null = null;
+      let isCompleted = false;
 
       try {
+        // 1. Start listening for progress via SSE
         eventSource = new EventSource(`/api/download?id=${downloadId}`);
+        eventSourceRef.current = eventSource;
+
         eventSource.onmessage = (e) => {
+          if (isCompleted) return;
           try {
             const d = JSON.parse(e.data);
             setServerProgress({ ...d, phase: d.status || "downloading" });
+
+            // Keep SSE open during conversion - only close when truly done
+            // The conversion phase sends percent=100 with downloaded="Converting"
+            if (d.status === "streaming" && d.downloaded !== "Converting") {
+              // Browser is receiving the file now - we're truly done
+              isCompleted = true;
+              setProgress(100);
+              setDownloading(false);
+              eventSource?.close();
+            }
           } catch (err) {}
         };
 
-        const res = await fetch("/api/download", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, quality, format, downloadId }),
-          signal: abortControllerRef.current.signal,
-        });
-
-        if (!res.ok) {
-          const j = await res.json();
-          throw new Error(j.error || "Download failed");
-        }
-
-        eventSource.close();
-        setServerProgress((prev: any) => ({
-          ...prev,
-          phase: "streaming",
-          percent: 100,
-        }));
-
-        const reader = res.body?.getReader();
-        const contentLength = +res.headers.get("Content-Length")! || 0;
-        let receivedLength = 0;
-        const chunks = [];
-
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            receivedLength += value.length;
-            if (contentLength) {
-              setProgress(Math.round((receivedLength / contentLength) * 100));
-            }
+        eventSource.onerror = () => {
+          // SSE connection closed or failed - clean up UI
+          if (!isCompleted) {
+            isCompleted = true;
+            setDownloading(false);
+            eventSource?.close();
           }
-        }
+        };
 
-        const blob = new Blob(chunks);
-        const urlObj = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = urlObj;
-        a.download = title
-          ? `${title}.${format === "audio" ? "mp3" : "mp4"}`
-          : "video.mp4";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(urlObj);
+        // 2. Trigger Direct Download (Browser Native)
+        const params = new URLSearchParams({
+          url,
+          quality,
+          format,
+          id: downloadId,
+        });
+        if (title) params.append("title", title);
+
+        // Use window.location.href to trigger download while keeping page active
+        // (Content-Disposition: attachment prevents navigation)
+        window.location.href = `/api/download?${params.toString()}`;
       } catch (err: any) {
-        if (err.name !== "AbortError") setError(err.message);
-      } finally {
-        if (eventSource) eventSource.close();
+        setError(err.message);
         setDownloading(false);
-        setProgress(0);
+        eventSource?.close();
       }
     },
     []
   );
 
-  const cancelDownload = useCallback(() => {
-    if (abortControllerRef.current) abortControllerRef.current.abort();
+  const cancelDownload = useCallback(async () => {
+    if (!downloadIdRef.current) return;
+
+    try {
+      // Cancel on server
+      await fetch(`/api/download?id=${downloadIdRef.current}`, {
+        method: "DELETE",
+      });
+    } catch (err) {
+      console.error("Failed to cancel download:", err);
+    } finally {
+      // Cleanup local state
+      setDownloading(false);
+      setProgress(-1);
+      setServerProgress({});
+      downloadIdRef.current = null;
+
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    }
   }, []);
 
   const stats =
@@ -417,31 +425,46 @@ export default function Home() {
 
             {singleDownload.downloading && (
               <div className={styles.progressContainer}>
-                {/* Phase 1: Server */}
-                {singleDownload.serverProgress.phase === "downloading" && (
+                {/* Phase 1: Server Download */}
+                {singleDownload.serverProgress.phase === "downloading" &&
+                  singleDownload.serverProgress.downloaded !== "Converting" && (
+                    <div className={styles.phaseInfo}>
+                      <h4>Downloading to Server...</h4>
+                      <div className={styles.progressBar}>
+                        <div
+                          className={styles.progressFill}
+                          style={{
+                            width: `${singleDownload.serverProgress.percent}%`,
+                          }}
+                        />
+                      </div>
+                      <div className={styles.progressStats}>
+                        <span>
+                          {singleDownload.serverProgress.percent.toFixed(1)}%
+                        </span>
+                        <span>
+                          {singleDownload.serverProgress.speed} • ETA:{" "}
+                          {singleDownload.serverProgress.eta}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                {/* Phase 2: Converting (4K HEVC encoding) */}
+                {singleDownload.serverProgress.downloaded === "Converting" && (
                   <div className={styles.phaseInfo}>
-                    <h4>Downloading to Server...</h4>
+                    <h4>🎬 Converting Video...</h4>
                     <div className={styles.progressBar}>
-                      <div
-                        className={styles.progressFill}
-                        style={{
-                          width: `${singleDownload.serverProgress.percent}%`,
-                        }}
-                      />
+                      <div className={styles.progressFillIndeterminate} />
                     </div>
                     <div className={styles.progressStats}>
-                      <span>
-                        {singleDownload.serverProgress.percent.toFixed(1)}%
-                      </span>
-                      <span>
-                        {singleDownload.serverProgress.speed} • ETA:{" "}
-                        {singleDownload.serverProgress.eta}
-                      </span>
+                      <span>{singleDownload.serverProgress.speed}</span>
+                      <span>{singleDownload.serverProgress.total}</span>
                     </div>
                   </div>
                 )}
 
-                {/* Phase 2: Streaming */}
+                {/* Phase 3: Streaming */}
                 {singleDownload.serverProgress.phase === "streaming" && (
                   <div className={styles.phaseInfo}>
                     <h4>Saving to Device...</h4>
