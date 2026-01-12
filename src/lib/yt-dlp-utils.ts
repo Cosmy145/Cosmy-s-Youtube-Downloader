@@ -25,7 +25,7 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
     // --flat-playlist gets playlist items without downloading details for each
     // --no-warnings suppresses warnings
     const { stdout } = await execPromise(
-      `yt-dlp -j --flat-playlist --cookies-from-browser chrome --no-warnings "${url}"`
+      `yt-dlp -j --flat-playlist --no-warnings --no-check-certificate "${url}"`
     );
     // Fix: Handle multiple JSON objects (NDJSON) or potentially multiple lines
     const lines = stdout
@@ -255,9 +255,7 @@ export async function downloadVideoToDisk(
     // Network Speed: Native yt-dlp parallelism
     "-N",
     "32",
-
-    "--cookies-from-browser",
-    "chrome",
+    "--no-check-certificate",
 
     // Post-Process (Remux)
     "--postprocessor-args",
@@ -617,7 +615,7 @@ export async function downloadVideoToDisk(
 export async function getVideoFilename(url: string): Promise<string> {
   try {
     const { stdout } = await execPromise(
-      `yt-dlp --get-filename -o "%(title)s.%(ext)s" --no-warnings "${url}"`
+      `yt-dlp --get-filename -o "%(title)s.%(ext)s" --no-warnings --no-check-certificate "${url}"`
     );
     return stdout.trim();
   } catch (error) {

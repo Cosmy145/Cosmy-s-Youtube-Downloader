@@ -267,6 +267,9 @@ const PlaylistRowItem = ({
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  useEffect(() => {
+    document.title = "Cosmy's Youtube Downloader";
+  }, []);
   const [loading, setLoading] = useState(false);
   const [metadata, setMetadata] = useState<
     | (VideoMetadata & {
@@ -378,7 +381,7 @@ export default function Home() {
             letterSpacing: "-0.02em",
           }}
         >
-          YouTube Downloader
+          Cosmy's Youtube Downloader
         </Typography>
         <Typography
           variant="h5"
