@@ -21,30 +21,43 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
   }
 
   try {
-    // -j returns JSON metadata
+    // -J returns a single JSON object (better for playlists)
     // --flat-playlist gets playlist items without downloading details for each
     // --no-warnings suppresses warnings
+    // --cookies-from-browser chrome uses Chrome cookies for authentication
     const { stdout } = await execPromise(
-      `yt-dlp -j --flat-playlist --no-warnings --no-check-certificate "${url}"`
+      `yt-dlp -J --flat-playlist --no-warnings --no-check-certificate --cookies-from-browser chrome "${url}"`
     );
-    // Fix: Handle multiple JSON objects (NDJSON) or potentially multiple lines
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter((l) => l.trim());
+
     let mainMetadata: any = null;
     let collectedItems: any[] = [];
 
-    for (const line of lines) {
-      try {
-        const json = JSON.parse(line);
-        if (json._type === "playlist" || json.entries) {
-          mainMetadata = json;
-        } else {
-          collectedItems.push(json);
-        }
-      } catch (e) {
-        // Ignore non-JSON lines
+    try {
+      // Try to parse the entire output as a single JSON (expected with -J)
+      const json = JSON.parse(stdout);
+
+      if (json._type === "playlist" || Array.isArray(json.entries)) {
+        mainMetadata = json;
+      } else {
+        // Single video or unrecognized structure
+        collectedItems.push(json);
+      }
+    } catch (e) {
+      // Fallback: splitting by lines if -J failed to produce single valid JSON
+      // (This shouldn't typically happen with -J)
+      const lines = stdout
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const json = JSON.parse(line);
+          if (json._type === "playlist" || json.entries) {
+            mainMetadata = json;
+          } else {
+            collectedItems.push(json);
+          }
+        } catch (ignored) {}
       }
     }
 
@@ -80,16 +93,22 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
 
     // Scenario B: No main object, but we collected items (NDJSON stream of videos)
     if (collectedItems.length > 1) {
-      // Synthetic playlist
+      // Synthetic playlist - try to extract meaningful info
       const first = collectedItems[0];
+
+      // Try to get a better playlist title from first video
+      const playlistTitle = first.playlist || first.title || `Playlist`;
+
       return {
         type: "playlist",
         id: "synthetic_playlist",
-        title: `Playlist (${collectedItems.length} videos)`,
+        title: playlistTitle,
         thumbnail:
           first.thumbnails?.[first.thumbnails.length - 1]?.url ||
           first.thumbnail,
-        uploader: "Unknown",
+        uploader: first.uploader || first.channel || "Unknown",
+        description: first.description,
+        view_count: undefined,
         item_count: collectedItems.length,
         items: collectedItems.map((e: any) => ({
           id: e.id,
@@ -147,8 +166,10 @@ export function getAvailableQualities(
   }
 
   const qualitiesMap = new Map<string, boolean>();
+  const audioFormatsMap = new Map<number, any>(); // bitrate -> format
 
   metadata.formats.forEach((format) => {
+    // Video formats
     if (format.resolution && format.resolution !== "audio only") {
       const height = format.resolution.split("x")[1];
       if (height) {
@@ -158,15 +179,45 @@ export function getAvailableQualities(
         qualitiesMap.set(quality, existing || hasAudio || false);
       }
     }
+
+    // Audio-only formats
+    if (
+      format.resolution === "audio only" &&
+      format.abr &&
+      format.acodec &&
+      format.acodec !== "none"
+    ) {
+      const bitrate = Math.round(format.abr);
+      // Keep highest quality format for each bitrate
+      if (
+        !audioFormatsMap.has(bitrate) ||
+        (format.filesize &&
+          format.filesize > (audioFormatsMap.get(bitrate)?.filesize || 0))
+      ) {
+        audioFormatsMap.set(bitrate, format);
+      }
+    }
   });
 
-  return Array.from(qualitiesMap.entries())
+  const videoQualities = Array.from(qualitiesMap.entries())
     .map(([quality, hasAudio]) => ({ quality, hasAudio }))
     .sort((a, b) => {
       const aNum = parseInt(a.quality);
       const bNum = parseInt(b.quality);
       return bNum - aNum; // Sort descending
     });
+
+  // Get top 3 audio formats by bitrate
+  const audioQualities = Array.from(audioFormatsMap.entries())
+    .sort((a, b) => b[0] - a[0]) // Sort by bitrate descending
+    .slice(0, 3) // Take top 3
+    .map(([bitrate, format]) => ({
+      quality: `${bitrate}kbps`,
+      hasAudio: true,
+    }));
+
+  // Only return actual audio formats found (no fallback defaults)
+  return [...videoQualities, ...audioQualities];
 }
 
 /**
@@ -197,12 +248,16 @@ export async function downloadVideoToDisk(
   const timestamp = Date.now();
   const id = downloadId || `download_${timestamp}`;
 
+  // Auto-detect if this is an audio download
+  const isAudioDownload =
+    formatType === "audio" || quality === "audio" || quality.includes("kbps");
+
   // Determine Extension: Always MP4 for compatibility
   // High-res (4K/2K) videos are usually VP9 and need re-encoding
   const isHighRes =
-    formatType === "video" &&
+    !isAudioDownload &&
     (quality === "best" || quality === "2160p" || quality === "1440p");
-  const ext = formatType === "audio" ? "mp3" : "mp4";
+  const ext = isAudioDownload ? "mp3" : "mp4";
 
   const fileName = `${id}.${ext}`;
 
@@ -225,7 +280,9 @@ export async function downloadVideoToDisk(
   }
 
   // Strategy: Prioritize iMovie-Compatible Formats (H.264/AVC)
-  if (formatType === "audio") {
+  if (isAudioDownload) {
+    // Audio download - just use best audio available
+    // yt-dlp will automatically select the best audio format
     formatString = "bestaudio";
   } else if (quality === "best") {
     // Best quality: Strongly prefer H.264, fall back to others
@@ -249,29 +306,67 @@ export async function downloadVideoToDisk(
     : // 1080p/720p: Stream copy (instant)
       `ffmpeg:-progress "${progressFilePath}" -c copy -movflags +faststart`;
 
-  // 🚀 STABLE REMUX Configuration
-  const args = [
-    "-f",
-    formatString,
-    "--merge-output-format",
-    ext,
+  // 🚀 Configuration: Different for audio vs video
+  let args: string[];
 
-    // Network Speed: Native yt-dlp parallelism
-    "-N",
-    "32",
-    "--no-check-certificate",
+  if (isAudioDownload) {
+    // Audio download configuration
+    args = [
+      "-f",
+      formatString,
 
-    // Post-Process (Remux)
-    "--postprocessor-args",
-    ffmpegArgs,
+      // Extract audio and convert to MP3
+      "--extract-audio",
+      "--audio-format",
+      "mp3",
+      "--audio-quality",
+      "0", // Best quality
 
-    "-o",
-    filePath,
-    "--newline", // Required for parsing
-    "--no-warnings",
-    "--progress", // Show progress updates
-    url,
-  ];
+      // Network Speed
+      "-N",
+      "32",
+      "--no-check-certificate",
+
+      // Authentication
+      "--cookies-from-browser",
+      "chrome",
+
+      "-o",
+      filePath,
+      "--newline",
+      "--no-warnings",
+      "--progress",
+      url,
+    ];
+  } else {
+    // Video download configuration
+    args = [
+      "-f",
+      formatString,
+      "--merge-output-format",
+      ext,
+
+      // Network Speed: Native yt-dlp parallelism
+      "-N",
+      "32",
+      "--no-check-certificate",
+
+      // Authentication: Use Chrome cookies to bypass bot detection
+      "--cookies-from-browser",
+      "chrome",
+
+      // Post-Process (Remux)
+      "--postprocessor-args",
+      ffmpegArgs,
+
+      "-o",
+      filePath,
+      "--newline", // Required for parsing
+      "--no-warnings",
+      "--progress", // Show progress updates
+      url,
+    ];
+  }
 
   return new Promise((resolve, reject) => {
     // Force Python to flush stdout/stderr immediately (no buffering)
@@ -619,7 +714,7 @@ export async function downloadVideoToDisk(
 export async function getVideoFilename(url: string): Promise<string> {
   try {
     const { stdout } = await execPromise(
-      `yt-dlp --get-filename -o "%(title)s.%(ext)s" --no-warnings --no-check-certificate "${url}"`
+      `yt-dlp --get-filename -o "%(title)s.%(ext)s" --no-warnings --no-check-certificate --cookies-from-browser chrome "${url}"`
     );
     return stdout.trim();
   } catch (error) {

@@ -279,6 +279,15 @@ const PlaylistRowItem = ({
     }
   }, [status]);
 
+  // Reset status when queue stops and restarts
+  useEffect(() => {
+    if (isQueueRunning && (status === "cancelled" || status === "error")) {
+      // Reset to idle when queue restarts
+      setStatus("idle");
+      hasStartedRef.current = false;
+    }
+  }, [isQueueRunning, status]);
+
   // Cancel Handler
   const handleCancel = useCallback(() => {
     setStatus("cancelled");
@@ -348,10 +357,12 @@ const PlaylistRowItem = ({
   const displayStatsObj = { percent: displayPercent, eta: displayEta };
 
   const qualities = [
-    { quality: "best", hasAudio: true },
     { quality: "1080p", hasAudio: true },
     { quality: "720p", hasAudio: true },
-    { quality: "audio", hasAudio: true },
+    { quality: "480p", hasAudio: true },
+    { quality: "360p", hasAudio: true },
+    { quality: "192kbps", hasAudio: true },
+    { quality: "128kbps", hasAudio: true },
   ];
 
   return (
@@ -373,9 +384,12 @@ const PlaylistRowItem = ({
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [showDownloadSection, setShowDownloadSection] = useState(false);
+
   useEffect(() => {
     document.title = "Cosmy's Youtube Downloader";
   }, []);
+
   const [loading, setLoading] = useState(false);
   const [metadata, setMetadata] = useState<
     | (VideoMetadata & {
@@ -389,7 +403,7 @@ export default function Home() {
   const singleDownload = useDownload();
 
   // Playlist State
-  const [playlistQuality, setPlaylistQuality] = useState("best");
+  const [playlistQuality, setPlaylistQuality] = useState("1080p");
   const [queueIndex, setQueueIndex] = useState(-1);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const activeItemCancelRef = useRef<(() => void) | null>(null);
@@ -405,6 +419,7 @@ export default function Home() {
     setMetadata(null);
     setIsQueueRunning(false);
     setQueueIndex(-1);
+    setShowDownloadSection(true);
 
     try {
       const response = await fetch("/api/metadata", {
@@ -437,7 +452,7 @@ export default function Home() {
   const startQueue = () => {
     setQueueIndex(0);
     setIsQueueRunning(true);
-    setCancelledItems(new Set());
+    setCancelledItems(new Set()); // Clear cancelled items when starting fresh
   };
 
   const stopQueue = () => {
@@ -447,6 +462,7 @@ export default function Home() {
     }
     setIsQueueRunning(false);
     setQueueIndex(-1);
+    // Don't clear cancelled items here - keep track of what was cancelled
   };
 
   const handleQueueComplete = () => {
@@ -491,169 +507,803 @@ export default function Home() {
       : singleDownload.serverProgress.eta;
 
   return (
-    <Container maxWidth="lg" sx={{ py: 8 }}>
-      <Box sx={{ textAlign: "center", mb: 8 }}>
-        <Typography
-          variant="h2"
-          sx={{
-            fontWeight: 800,
-            background:
-              "linear-gradient(135deg, #a29bfe 0%, #6c5ce7 50%, #00d2d3 100%)",
-            backgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            fontSize: { xs: "2.5rem", md: "4rem" },
-            mb: 2,
-            letterSpacing: "-0.02em",
-          }}
-        >
-          Cosmy's Youtube Downloader
-        </Typography>
-        <Typography
-          variant="h5"
-          color="text.secondary"
-          sx={{ fontWeight: 400, opacity: 0.8 }}
-        >
-          Premium Quality Downloads • Playlists • 4K Support
-        </Typography>
-      </Box>
-
-      <Paper
-        elevation={0}
-        component="form"
+    <Box sx={{ minHeight: "100vh", bgcolor: "#000" }}>
+      {/* Header */}
+      <Box
+        component="header"
         sx={{
-          p: "8px 16px",
           display: "flex",
+          justifyContent: "space-between",
           alignItems: "center",
-          width: "100%",
-          maxWidth: 800,
-          mx: "auto",
-          mb: 6,
-          background: "rgba(255,255,255,0.05)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255,255,255,0.1)",
-          borderRadius: "50px",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
-          transition: "all 0.3s ease",
-          "&:focus-within": {
-            background: "rgba(255,255,255,0.08)",
-            borderColor: "#a29bfe",
-            boxShadow: "0 12px 48px rgba(162, 155, 254, 0.2)",
-          },
-        }}
-        onSubmit={(e: any) => {
-          e.preventDefault();
-          fetchVideoInfo();
+          px: { xs: 2, md: 6 },
+          py: 2,
+          borderBottom: "1px solid rgba(255,255,255,0.1)",
         }}
       >
-        <InputBase
-          sx={{
-            ml: 2,
-            flex: 1,
-            fontSize: "1.1rem",
-            color: "#fff",
-            "& .MuiInputBase-input::placeholder": {
-              color: "rgba(255,255,255,0.5)",
-              opacity: 1,
-            },
-          }}
-          placeholder="Paste YouTube Video or Playlist URL..."
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          disabled={loading || singleDownload.downloading || isQueueRunning}
-        />
-        <Button
-          type="submit"
-          variant="contained"
-          onClick={fetchVideoInfo}
-          disabled={loading || singleDownload.downloading || isQueueRunning}
-          sx={{
-            borderRadius: "30px",
-            px: 4,
-            py: 1.2,
-            background: "linear-gradient(45deg, #a29bfe, #6c5ce7)",
-            boxShadow: "0 4px 15px rgba(108, 92, 231, 0.4)",
-            textTransform: "none",
-            fontSize: "1rem",
-            fontWeight: 600,
-            minWidth: "120px",
-          }}
-        >
-          {loading ? <CircularProgress size={24} color="inherit" /> : "Start"}
-        </Button>
-      </Paper>
-
-      {error && (
-        <Alert
-          severity="error"
-          sx={{ mt: 2, maxWidth: 800, mx: "auto", borderRadius: 2 }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      {metadata && !isPlaylist && (
-        <Box>
-          <VideoMetadataCard
-            thumbnail={metadata.thumbnail}
-            title={metadata.title}
-            uploader={metadata.uploader}
-            duration={formatDuration(metadata.duration)}
-            viewCount={(metadata as any).view_count}
-          />
-
-          {singleDownload.downloading &&
-          singleDownload.serverProgress.phase !== "cancelled" ? (
-            <DetailedProgressBar
-              phase={singleDownload.serverProgress.phase}
-              downloaded={singleDownload.serverProgress.downloaded}
-              total={singleDownload.serverProgress.total || ""}
-              speed={singleDownload.serverProgress.speed || ""}
-              percent={svDisplayPercent}
-              eta={svDisplayEta}
-              onCancel={singleDownload.cancelDownload}
-            />
-          ) : (
-            <QualityTable
-              qualities={metadata.availableQualities || []}
-              onDownload={handleSingleDownload}
-            />
-          )}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+          <Box
+            sx={{
+              width: 32,
+              height: 32,
+              bgcolor: "#FF0000",
+              borderRadius: "6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: "18px",
+              fontWeight: 700,
+            }}
+          >
+            ▶
+          </Box>
+          <Typography
+            sx={{
+              color: "#fff",
+              fontSize: "16px",
+              fontWeight: 700,
+              letterSpacing: "0.5px",
+            }}
+          >
+            COSMY'S YOUTUBE DOWNLOADER
+          </Typography>
         </Box>
-      )}
+        <Box sx={{ display: { xs: "none", sm: "flex" }, gap: 4 }}>
+          <Typography
+            sx={{
+              color: "#fff",
+              fontSize: "14px",
+              fontWeight: 500,
+              cursor: "pointer",
+              "&:hover": { color: "#FF0000" },
+            }}
+          >
+            HOME
+          </Typography>
+          <Typography
+            sx={{
+              color: "rgba(255,255,255,0.6)",
+              fontSize: "14px",
+              fontWeight: 500,
+              cursor: "pointer",
+              "&:hover": { color: "#fff" },
+            }}
+          >
+            FAQ
+          </Typography>
+          <Typography
+            sx={{
+              color: "rgba(255,255,255,0.6)",
+              fontSize: "14px",
+              fontWeight: 500,
+              cursor: "pointer",
+              "&:hover": { color: "#fff" },
+            }}
+          >
+            CONTACT
+          </Typography>
+        </Box>
+      </Box>
 
-      {metadata && isPlaylist && (
-        <Box>
-          <PlaylistControls
-            title={metadata.title}
-            itemCount={(metadata as PlaylistMetadata).item_count}
-            thumbnail={metadata.thumbnail}
-            isQueueRunning={isQueueRunning}
-            onStartQueue={startQueue}
-            onStopQueue={stopQueue}
-            queueIndex={queueIndex}
-            globalQuality={playlistQuality}
-            onQualityChange={setPlaylistQuality}
-          />
-
+      {/* Hero Section */}
+      <Container maxWidth="xl" sx={{ py: { xs: 4, md: 8 } }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+            gap: { xs: 4, md: 8 },
+            alignItems: "center",
+            minHeight: { md: "600px" },
+          }}
+        >
+          {/* Left Side - Hero Text */}
           <Box>
-            {(metadata as PlaylistMetadata).items.map((item, idx) => (
-              <PlaylistRowItem
-                key={item.id}
-                item={item}
-                index={idx}
-                isActive={isQueueRunning && idx === queueIndex}
-                onComplete={handleQueueComplete}
-                defaultQuality={playlistQuality}
-                isQueueRunning={isQueueRunning}
-                onRegisterCancel={(cancelFn) => {
-                  activeItemCancelRef.current = cancelFn;
-                }}
-                onItemCancelled={handleItemCancelled}
-              />
-            ))}
+            <Box
+              sx={{
+                display: "inline-block",
+                bgcolor: "#FF0000",
+                color: "#fff",
+                px: 2,
+                py: 0.5,
+                fontSize: "12px",
+                fontWeight: 700,
+                letterSpacing: "1px",
+                mb: 3,
+              }}
+            >
+              HOW TO ONLINE?
+            </Box>
+            <Typography
+              sx={{
+                fontSize: { xs: "48px", md: "72px" },
+                fontWeight: 900,
+                lineHeight: 1.1,
+                color: "#fff",
+                mb: 3,
+              }}
+            >
+              DOWNLOAD
+              <br />
+              YOUTUBE
+              <br />
+              VIDEOS IN{" "}
+              <Box component="span" sx={{ color: "#FF0000" }}>
+                4K
+              </Box>
+            </Typography>
+            <Typography
+              sx={{
+                color: "rgba(255,255,255,0.6)",
+                fontSize: "14px",
+                lineHeight: 1.6,
+                maxWidth: "400px",
+              }}
+            >
+              Premium quality, ultra-fast speeds, and no ads. The best way to
+              save your favorite content securely.
+            </Typography>
+          </Box>
+
+          {/* Right Side - Download Box */}
+          <Box
+            sx={{
+              bgcolor: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "12px",
+              p: 4,
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            <InputBase
+              sx={{
+                width: "100%",
+                bgcolor: "rgba(255,255,255,0.05)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "8px",
+                px: 2,
+                py: 1.5,
+                color: "#fff",
+                fontSize: "14px",
+                mb: 2,
+                "& .MuiInputBase-input::placeholder": {
+                  color: "rgba(255,255,255,0.3)",
+                  opacity: 1,
+                },
+              }}
+              placeholder="Paste YouTube URL here..."
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+              disabled={loading || singleDownload.downloading || isQueueRunning}
+            />
+            <Typography
+              sx={{
+                color: "rgba(255,255,255,0.4)",
+                fontSize: "11px",
+                mb: 2,
+              }}
+            >
+              ● SIMPLE TOOL BECAUSE YOUR CLIPBOARD HAS{" "}
+              <Box component="span" sx={{ color: "#FF0000" }}>
+                LIMITS
+              </Box>
+            </Typography>
+            <Button
+              fullWidth
+              onClick={fetchVideoInfo}
+              disabled={loading || singleDownload.downloading || isQueueRunning}
+              sx={{
+                bgcolor: "#FF0000",
+                color: "#fff",
+                py: 1.5,
+                fontSize: "14px",
+                fontWeight: 700,
+                borderRadius: "8px",
+                textTransform: "none",
+                mb: 3,
+                "&:hover": { bgcolor: "#CC0000" },
+                "&:disabled": { bgcolor: "rgba(255,0,0,0.3)" },
+              }}
+            >
+              {loading ? (
+                <CircularProgress size={20} sx={{ color: "#fff" }} />
+              ) : (
+                <>DOWNLOAD ⬇</>
+              )}
+            </Button>
+
+            {/* Feature Badges */}
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 2,
+              }}
+            >
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                  sx={{
+                    width: 8,
+                    height: 8,
+                    bgcolor: "#FF0000",
+                    borderRadius: "2px",
+                  }}
+                />
+                <Typography sx={{ color: "#fff", fontSize: "11px" }}>
+                  4K QUALITY
+                </Typography>
+              </Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                  sx={{
+                    width: 8,
+                    height: 8,
+                    bgcolor: "#FF0000",
+                    borderRadius: "2px",
+                  }}
+                />
+                <Typography sx={{ color: "#fff", fontSize: "11px" }}>
+                  ULTRA FAST
+                </Typography>
+              </Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                  sx={{
+                    width: 8,
+                    height: 8,
+                    bgcolor: "#FF0000",
+                    borderRadius: "2px",
+                  }}
+                />
+                <Typography sx={{ color: "#fff", fontSize: "11px" }}>
+                  MP3 & MP4
+                </Typography>
+              </Box>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                  sx={{
+                    width: 8,
+                    height: 8,
+                    bgcolor: "#FF0000",
+                    borderRadius: "2px",
+                  }}
+                />
+                <Typography sx={{ color: "#fff", fontSize: "11px" }}>
+                  SECURE
+                </Typography>
+              </Box>
+            </Box>
           </Box>
         </Box>
+      </Container>
+
+      {/* Download Section - Shows after user clicks download */}
+      {showDownloadSection && (
+        <Container maxWidth="xl" sx={{ py: 6 }}>
+          {/* Back Button */}
+          <Box
+            onClick={() => {
+              setShowDownloadSection(false);
+              setMetadata(null);
+              setError("");
+            }}
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 1,
+              mb: 4,
+              px: 2,
+              py: 1,
+              bgcolor: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "6px",
+              cursor: "pointer",
+              transition: "all 0.2s",
+              "&:hover": {
+                bgcolor: "rgba(255,255,255,0.08)",
+                borderColor: "rgba(255,255,255,0.2)",
+              },
+            }}
+          >
+            <Typography sx={{ color: "#fff", fontSize: "14px" }}>←</Typography>
+            <Typography
+              sx={{
+                color: "rgba(255,255,255,0.6)",
+                fontSize: "12px",
+                fontWeight: 600,
+                letterSpacing: "0.5px",
+              }}
+            >
+              PASTE URL
+            </Typography>
+          </Box>
+
+          {error && (
+            <Alert
+              severity="error"
+              sx={{ mb: 4, borderRadius: 2, bgcolor: "rgba(255,0,0,0.1)" }}
+            >
+              {error}
+            </Alert>
+          )}
+
+          {metadata && !isPlaylist && (
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+                gap: 6,
+              }}
+            >
+              {/* Left Side - Video Info */}
+              <Box>
+                <VideoMetadataCard
+                  thumbnail={metadata.thumbnail}
+                  title={metadata.title}
+                  uploader={metadata.uploader}
+                  duration={formatDuration(metadata.duration)}
+                  viewCount={(metadata as any).view_count}
+                />
+              </Box>
+
+              {/* Right Side - Quality Options */}
+              <Box>
+                {singleDownload.downloading &&
+                singleDownload.serverProgress.phase !== "cancelled" ? (
+                  <DetailedProgressBar
+                    phase={singleDownload.serverProgress.phase}
+                    downloaded={singleDownload.serverProgress.downloaded}
+                    total={singleDownload.serverProgress.total || ""}
+                    speed={singleDownload.serverProgress.speed || ""}
+                    percent={svDisplayPercent}
+                    eta={svDisplayEta}
+                    onCancel={singleDownload.cancelDownload}
+                  />
+                ) : (
+                  <QualityTable
+                    qualities={metadata.availableQualities || []}
+                    onDownload={handleSingleDownload}
+                  />
+                )}
+              </Box>
+            </Box>
+          )}
+
+          {metadata && isPlaylist && (
+            <Box>
+              <PlaylistControls
+                title={metadata.title}
+                itemCount={(metadata as PlaylistMetadata).item_count}
+                thumbnail={metadata.thumbnail}
+                uploader={metadata.uploader}
+                viewCount={metadata.view_count}
+                isQueueRunning={isQueueRunning}
+                onStartQueue={startQueue}
+                onStopQueue={stopQueue}
+                queueIndex={queueIndex}
+                globalQuality={playlistQuality}
+                onQualityChange={setPlaylistQuality}
+              />
+
+              <Box>
+                {(metadata as PlaylistMetadata).items.map((item, idx) => (
+                  <PlaylistRowItem
+                    key={item.id}
+                    item={item}
+                    index={idx}
+                    isActive={isQueueRunning && idx === queueIndex}
+                    onComplete={handleQueueComplete}
+                    defaultQuality={playlistQuality}
+                    isQueueRunning={isQueueRunning}
+                    onRegisterCancel={(cancelFn) => {
+                      activeItemCancelRef.current = cancelFn;
+                    }}
+                    onItemCancelled={handleItemCancelled}
+                  />
+                ))}
+              </Box>
+            </Box>
+          )}
+        </Container>
       )}
-    </Container>
+
+      {/* How It Works Section */}
+      <Box sx={{ bgcolor: "#0a0a0a", py: { xs: 6, md: 10 } }}>
+        <Container maxWidth="lg">
+          <Typography
+            sx={{
+              fontSize: { xs: "32px", md: "48px" },
+              fontWeight: 900,
+              color: "#fff",
+              mb: 2,
+            }}
+          >
+            HOW IT WORKS
+          </Typography>
+          <Typography
+            sx={{
+              color: "rgba(255,255,255,0.5)",
+              fontSize: "14px",
+              mb: 6,
+            }}
+          >
+            Download your favorite videos in three simple steps. No complicated
+            software, just copy, paste, and save.
+          </Typography>
+
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "repeat(3, 1fr)" },
+              gap: 3,
+            }}
+          >
+            {/* Step 1 */}
+            <Box
+              sx={{
+                bgcolor: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "12px",
+                p: 4,
+                position: "relative",
+                "&::before": {
+                  content: '"📋"',
+                  position: "absolute",
+                  top: 20,
+                  right: 20,
+                  fontSize: "32px",
+                  opacity: 0.3,
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: "56px",
+                  fontWeight: 900,
+                  color: "#FF0000",
+                  lineHeight: 1,
+                  mb: 2,
+                }}
+              >
+                01
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "18px",
+                  fontWeight: 700,
+                  color: "#fff",
+                  mb: 1.5,
+                }}
+              >
+                COPY URL
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "13px",
+                  color: "rgba(255,255,255,0.5)",
+                  lineHeight: 1.6,
+                }}
+              >
+                Find the video you want. Copy the link either on YouTube or copy
+                the link from your browser's address bar.
+              </Typography>
+            </Box>
+
+            {/* Step 2 */}
+            <Box
+              sx={{
+                bgcolor: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "12px",
+                p: 4,
+                position: "relative",
+                "&::before": {
+                  content: '"📝"',
+                  position: "absolute",
+                  top: 20,
+                  right: 20,
+                  fontSize: "32px",
+                  opacity: 0.3,
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: "56px",
+                  fontWeight: 900,
+                  color: "#FF0000",
+                  lineHeight: 1,
+                  mb: 2,
+                }}
+              >
+                02
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "18px",
+                  fontWeight: 700,
+                  color: "#fff",
+                  mb: 1.5,
+                }}
+              >
+                PASTE LINK
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "13px",
+                  color: "rgba(255,255,255,0.5)",
+                  lineHeight: 1.6,
+                }}
+              >
+                Paste the YouTube link in the search box at the top of this page
+                and click the "Start Download" button.
+              </Typography>
+            </Box>
+
+            {/* Step 3 */}
+            <Box
+              sx={{
+                bgcolor: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "12px",
+                p: 4,
+                position: "relative",
+                "&::before": {
+                  content: '"💾"',
+                  position: "absolute",
+                  top: 20,
+                  right: 20,
+                  fontSize: "32px",
+                  opacity: 0.3,
+                },
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: "56px",
+                  fontWeight: 900,
+                  color: "#FF0000",
+                  lineHeight: 1,
+                  mb: 2,
+                }}
+              >
+                03
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "18px",
+                  fontWeight: 700,
+                  color: "#fff",
+                  mb: 1.5,
+                }}
+              >
+                DOWNLOAD
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "13px",
+                  color: "rgba(255,255,255,0.5)",
+                  lineHeight: 1.6,
+                }}
+              >
+                Choose your preferred format and quality (up to 4K) and then
+                click the file transfer link to start.
+              </Typography>
+            </Box>
+          </Box>
+        </Container>
+      </Box>
+
+      {/* CTA Section */}
+      <Box sx={{ py: { xs: 8, md: 12 }, textAlign: "center" }}>
+        <Container maxWidth="md">
+          <Typography
+            sx={{
+              fontSize: { xs: "36px", md: "56px" },
+              fontWeight: 900,
+              color: "#fff",
+              mb: 2,
+            }}
+          >
+            READY TO DOWNLOAD?
+          </Typography>
+          <Typography
+            sx={{
+              color: "rgba(255,255,255,0.6)",
+              fontSize: "14px",
+              mb: 4,
+            }}
+          >
+            Get unrestricted access to your favorite videos offline.
+            <br />
+            Fast, free, and secure.
+          </Typography>
+          <Button
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            sx={{
+              bgcolor: "#FF0000",
+              color: "#fff",
+              px: 6,
+              py: 2,
+              fontSize: "14px",
+              fontWeight: 700,
+              borderRadius: "8px",
+              textTransform: "none",
+              "&:hover": { bgcolor: "#CC0000" },
+            }}
+          >
+            TRY IT NOW
+          </Button>
+        </Container>
+      </Box>
+
+      {/* Footer */}
+      <Box
+        sx={{
+          borderTop: "1px solid rgba(255,255,255,0.1)",
+          py: 6,
+        }}
+      >
+        <Container maxWidth="lg">
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "2fr 1fr 1fr 1fr" },
+              gap: 4,
+              mb: 4,
+            }}
+          >
+            <Box>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}
+              >
+                <Box
+                  sx={{
+                    width: 24,
+                    height: 24,
+                    bgcolor: "#FF0000",
+                    borderRadius: "4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "14px",
+                  }}
+                >
+                  ▶
+                </Box>
+                <Typography
+                  sx={{ color: "#fff", fontSize: "14px", fontWeight: 700 }}
+                >
+                  COSMY'S YOUTUBE DOWNLOADER
+                </Typography>
+              </Box>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  lineHeight: 1.6,
+                }}
+              >
+                The best free YouTube downloader on the web, now updated for
+                videos, and more and strip just one click.
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  color: "#fff",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  mb: 2,
+                }}
+              >
+                CONTENT
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Features
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Extension
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  color: "#fff",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  mb: 2,
+                }}
+              >
+                SUPPORT
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                FAQ
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Contact
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  color: "#fff",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  mb: 2,
+                }}
+              >
+                LEGAL
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Privacy
+              </Typography>
+              <Typography
+                sx={{
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Terms
+              </Typography>
+            </Box>
+          </Box>
+
+          <Typography
+            sx={{
+              color: "rgba(255,255,255,0.3)",
+              fontSize: "11px",
+              textAlign: "center",
+              pt: 4,
+              borderTop: "1px solid rgba(255,255,255,0.05)",
+            }}
+          >
+            © 2025 - 2077 COSMY'S YT DOWNLOADER. All rights reserved.
+          </Typography>
+        </Container>
+      </Box>
+    </Box>
   );
 }

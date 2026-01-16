@@ -5,6 +5,7 @@ export interface VideoFormat {
   filesize?: number;
   vcodec?: string;
   acodec?: string;
+  abr?: number; // Audio bitrate in kbps
   format_note?: string;
 }
 
