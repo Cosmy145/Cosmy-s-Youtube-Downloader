@@ -22,7 +22,13 @@ interface PlaylistItemAccordionProps {
   qualities: any[];
   onDownload: (quality: string) => void;
   // Queue/Download State
-  status: "idle" | "downloading" | "completed" | "error";
+  status:
+    | "idle"
+    | "downloading"
+    | "completed"
+    | "error"
+    | "cancelled"
+    | "pending";
   progressObj?: any; // serverProgress
   displayStats?: any; // { percent, eta... }
   onCancel?: () => void;
@@ -91,6 +97,22 @@ export const PlaylistItemAccordion = ({
               <Chip
                 label="Error"
                 color="error"
+                size="small"
+                variant="outlined"
+              />
+            )}
+            {status === "cancelled" && (
+              <Chip
+                label="Cancelled"
+                color="warning"
+                size="small"
+                variant="outlined"
+              />
+            )}
+            {status === "pending" && (
+              <Chip
+                label="Pending"
+                color="info"
                 size="small"
                 variant="outlined"
               />
