@@ -6,13 +6,11 @@ import {
   Box,
   Typography,
   Paper,
-  TextField,
   InputBase,
   Button,
   Alert,
   CircularProgress,
 } from "@mui/material";
-import SearchIcon from "@mui/icons-material/Search";
 import { VideoMetadataCard } from "@/components/VideoMetadataCard";
 import { QualityTable } from "@/components/QualityTable";
 import { DetailedProgressBar } from "@/components/DetailedProgressBar";
@@ -20,7 +18,7 @@ import { PlaylistControls } from "@/components/PlaylistControls";
 import { PlaylistItemAccordion } from "@/components/PlaylistItemAccordion";
 import type { VideoMetadata, PlaylistItem, PlaylistMetadata } from "@/types";
 
-// --- Hook Definition (kept inline for simplicity as requested, but cleaned up) ---
+// --- Hook Definition ---
 const useDownload = () => {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -32,7 +30,11 @@ const useDownload = () => {
   const downloadIdRef = useRef<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Helper to extract stats
+  // Smoothing refs for merge stats
+  const mergeSpeedRef = useRef<number>(1);
+  const mergeEtaRef = useRef<number>(0);
+
+  // Helper to extract stats with smoothing
   const getMergeStats = (duration: number) => {
     let currentSeconds = 0;
     if (serverProgress?.mergedSeconds !== undefined) {
@@ -58,15 +60,37 @@ const useDownload = () => {
     let eta = "...";
     if (duration > 0 && currentSeconds > 0) {
       const remaining = duration - currentSeconds;
-      let speedVal = 1;
+
+      // Extract current speed multiplier
+      let currentSpeedVal = 1;
       if (serverProgress?.total) {
         const match = (serverProgress.total as string).match(/@\s*([\d.]+)x/);
-        if (match) speedVal = parseFloat(match[1]);
+        if (match) currentSpeedVal = parseFloat(match[1]);
       }
+
+      // Smooth the speed multiplier (20% current, 80% previous)
+      if (mergeSpeedRef.current === 1) {
+        mergeSpeedRef.current = currentSpeedVal;
+      } else {
+        mergeSpeedRef.current =
+          0.2 * currentSpeedVal + 0.8 * mergeSpeedRef.current;
+      }
+
+      const speedVal = mergeSpeedRef.current;
+
       if (speedVal > 0) {
-        const etaSeconds = remaining / speedVal;
-        const m = Math.floor(etaSeconds / 60);
-        const s = Math.floor(etaSeconds % 60);
+        const currentEtaSeconds = remaining / speedVal;
+
+        // Smooth the ETA (20% current, 80% previous)
+        if (mergeEtaRef.current === 0) {
+          mergeEtaRef.current = currentEtaSeconds;
+        } else {
+          mergeEtaRef.current =
+            0.2 * currentEtaSeconds + 0.8 * mergeEtaRef.current;
+        }
+
+        const m = Math.floor(mergeEtaRef.current / 60);
+        const s = Math.floor(mergeEtaRef.current % 60);
         eta = `${m}:${s.toString().padStart(2, "0")}`;
       }
     }
@@ -84,6 +108,10 @@ const useDownload = () => {
       setError("");
       setProgress(0);
       setServerProgress({ phase: "starting", percent: 0 });
+
+      // Reset smoothing refs for new download
+      mergeSpeedRef.current = 1;
+      mergeEtaRef.current = 0;
 
       const downloadId = `dl_${Date.now()}_${Math.random()
         .toString(36)
@@ -144,16 +172,20 @@ const useDownload = () => {
 
   const cancelDownload = useCallback(async () => {
     if (!downloadIdRef.current) return;
+
+    // Immediate UI feedback
+    setDownloading(false);
+    setProgress(-1);
+    setServerProgress({ phase: "cancelled", percent: 0 });
+
     try {
       await fetch(`/api/download?id=${downloadIdRef.current}`, {
         method: "DELETE",
       });
     } catch (err) {
-      console.error(err);
+      console.error("Cancel error:", err);
     } finally {
-      setDownloading(false);
-      setProgress(-1);
-      setServerProgress({});
+      // Clean up
       downloadIdRef.current = null;
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -187,28 +219,96 @@ const PlaylistRowItem = ({
   isActive,
   onComplete,
   defaultQuality,
+  onRegisterCancel,
+  isQueueRunning,
+  onItemCancelled,
 }: {
   item: PlaylistItem;
   index: number;
   isActive: boolean;
   onComplete: () => void;
   defaultQuality: string;
+  onRegisterCancel: (cancelFn: () => void) => void;
+  isQueueRunning: boolean;
+  onItemCancelled: (index: number) => void;
 }) => {
   const dl = useDownload();
   const [status, setStatus] = useState<
-    "idle" | "downloading" | "completed" | "error"
+    "idle" | "downloading" | "completed" | "error" | "cancelled" | "pending"
   >("idle");
   const [expanded, setExpanded] = useState(false);
+  const hasStartedRef = useRef(false);
+
+  // Detect pending status
+  useEffect(() => {
+    if (isQueueRunning && !isActive && status === "idle") {
+      setStatus("pending");
+    } else if (!isQueueRunning && status === "pending") {
+      setStatus("idle");
+    }
+  }, [isQueueRunning, isActive, status]);
 
   // Auto-start queue logic
   useEffect(() => {
-    if (isActive && status === "idle") {
+    if (
+      isActive &&
+      (status === "idle" || status === "pending") &&
+      !hasStartedRef.current
+    ) {
+      hasStartedRef.current = true;
       setStatus("downloading");
       dl.startDownload(item.url, defaultQuality, "video", item.title).catch(
-        () => setStatus("error")
+        (err) => {
+          setStatus("error");
+        }
       );
     }
-  }, [isActive, status, item.url, defaultQuality, item.title, dl]);
+  }, [
+    isActive,
+    status,
+    item.url,
+    defaultQuality,
+    item.title,
+    dl.startDownload,
+  ]);
+
+  // Reset hasStarted when status changes back to idle
+  useEffect(() => {
+    if (status === "idle") {
+      hasStartedRef.current = false;
+    }
+  }, [status]);
+
+  // Cancel Handler
+  const handleCancel = useCallback(() => {
+    setStatus("cancelled");
+    onItemCancelled(index);
+    if (status === "downloading") {
+      dl.cancelDownload();
+    }
+    if (isActive) {
+      onComplete();
+    }
+  }, [status, dl.cancelDownload, onComplete, isActive, onItemCancelled, index]);
+
+  // Auto-expand when active and downloading
+  useEffect(() => {
+    if (isActive && status === "downloading") {
+      setExpanded(true);
+      onRegisterCancel(handleCancel);
+    }
+  }, [isActive, status, onRegisterCancel, handleCancel]);
+
+  // Auto-close when done
+  useEffect(() => {
+    if (
+      status === "completed" ||
+      status === "cancelled" ||
+      status === "error"
+    ) {
+      setExpanded(false);
+    }
+  }, [status]);
 
   // Completion watcher
   useEffect(() => {
@@ -217,9 +317,16 @@ const PlaylistRowItem = ({
       onComplete();
     } else if (status === "downloading" && dl.error) {
       setStatus("error");
-      onComplete(); // Advance even on error
+      onComplete();
     }
   }, [dl.progress, dl.error, status, onComplete]);
+
+  // Cancellation watcher
+  useEffect(() => {
+    if (status === "downloading" && !dl.downloading && dl.progress === -1) {
+      setStatus("cancelled");
+    }
+  }, [dl.downloading, dl.progress, status]);
 
   // Manual Download Trigger
   const handleManualDownload = (q: string) => {
@@ -238,7 +345,6 @@ const PlaylistRowItem = ({
       ? mergeStats.eta
       : dl.serverProgress.eta;
 
-  // Construct displayStats object for accordion
   const displayStatsObj = { percent: displayPercent, eta: displayEta };
 
   const qualities = [
@@ -259,7 +365,7 @@ const PlaylistRowItem = ({
       status={status}
       progressObj={dl.serverProgress}
       displayStats={displayStatsObj}
-      onCancel={dl.cancelDownload}
+      onCancel={handleCancel}
       isQueueRunning={isActive && status === "downloading"}
     />
   );
@@ -286,6 +392,8 @@ export default function Home() {
   const [playlistQuality, setPlaylistQuality] = useState("best");
   const [queueIndex, setQueueIndex] = useState(-1);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const activeItemCancelRef = useRef<(() => void) | null>(null);
+  const [cancelledItems, setCancelledItems] = useState<Set<number>>(new Set());
 
   const fetchVideoInfo = async () => {
     if (!url) {
@@ -296,7 +404,7 @@ export default function Home() {
     setError("");
     setMetadata(null);
     setIsQueueRunning(false);
-    setQueueIndex(-1); // Reset playlist state
+    setQueueIndex(-1);
 
     try {
       const response = await fetch("/api/metadata", {
@@ -329,21 +437,38 @@ export default function Home() {
   const startQueue = () => {
     setQueueIndex(0);
     setIsQueueRunning(true);
+    setCancelledItems(new Set());
   };
+
   const stopQueue = () => {
+    if (activeItemCancelRef.current) {
+      activeItemCancelRef.current();
+      activeItemCancelRef.current = null;
+    }
     setIsQueueRunning(false);
     setQueueIndex(-1);
   };
+
   const handleQueueComplete = () => {
     if (!isQueueRunning || !metadata || metadata.type !== "playlist") return;
     setQueueIndex((prev) => {
-      const next = prev + 1;
+      let next = prev + 1;
+
+      // Skip over cancelled items
+      while (next < metadata.items.length && cancelledItems.has(next)) {
+        next++;
+      }
+
       if (next >= metadata.items.length) {
         setIsQueueRunning(false);
         return -1;
       }
       return next;
     });
+  };
+
+  const handleItemCancelled = (index: number) => {
+    setCancelledItems((prev) => new Set(prev).add(index));
   };
 
   const isPlaylist = metadata?.type === "playlist";
@@ -476,7 +601,8 @@ export default function Home() {
             viewCount={(metadata as any).view_count}
           />
 
-          {singleDownload.downloading ? (
+          {singleDownload.downloading &&
+          singleDownload.serverProgress.phase !== "cancelled" ? (
             <DetailedProgressBar
               phase={singleDownload.serverProgress.phase}
               downloaded={singleDownload.serverProgress.downloaded}
@@ -518,6 +644,11 @@ export default function Home() {
                 isActive={isQueueRunning && idx === queueIndex}
                 onComplete={handleQueueComplete}
                 defaultQuality={playlistQuality}
+                isQueueRunning={isQueueRunning}
+                onRegisterCancel={(cancelFn) => {
+                  activeItemCancelRef.current = cancelFn;
+                }}
+                onItemCancelled={handleItemCancelled}
               />
             ))}
           </Box>

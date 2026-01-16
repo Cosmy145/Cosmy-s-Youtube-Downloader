@@ -197,9 +197,11 @@ export async function downloadVideoToDisk(
   const timestamp = Date.now();
   const id = downloadId || `download_${timestamp}`;
 
-  // Determine Extension: Always MP4 for compatibility (even for 4K converted files)
-  const is4K =
-    formatType === "video" && (quality === "best" || quality === "2160p");
+  // Determine Extension: Always MP4 for compatibility
+  // High-res (4K/2K) videos are usually VP9 and need re-encoding
+  const isHighRes =
+    formatType === "video" &&
+    (quality === "best" || quality === "2160p" || quality === "1440p");
   const ext = formatType === "audio" ? "mp3" : "mp4";
 
   const fileName = `${id}.${ext}`;
@@ -222,28 +224,30 @@ export async function downloadVideoToDisk(
     console.warn("Failed to create progress file", e);
   }
 
-  // Strategy: Prioritize Speed & Native Formats
+  // Strategy: Prioritize iMovie-Compatible Formats (H.264/AVC)
   if (formatType === "audio") {
     formatString = "bestaudio";
-  } else if (is4K) {
-    // 4K Strategy: Prefer H.264/HEVC (instant remux, no heat)
-    // Falls back to VP9 (hardware conversion) if H.264/HEVC unavailable
-    // Strictly requires 2160p - won't fall back to lower resolutions
+  } else if (quality === "best") {
+    // Best quality: Strongly prefer H.264, fall back to others
+    formatString = "bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best";
+  } else if (isHighRes) {
+    // 4K/2K: Prefer H.264 (avc1) for instant copy, HEVC as backup, VP9 last resort
     formatString =
       "bestvideo[height=2160][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=2160][vcodec^=hev1]+bestaudio[ext=m4a]/bestvideo[height=2160]+bestaudio/bestvideo[height>=2160]+bestaudio";
   } else {
-    // 1080p Source: H.264 (Native Copy)
+    // 1080p/720p: Prefer H.264 in MP4 container
     const height = quality.replace("p", "");
-    formatString = `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
+    formatString = `bestvideo[height<=${height}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}]`;
   }
 
-  // 🎥 FFMPEG Post-Processing Rules
-  // 4K (likely VP9): Convert to H.264 using hardware acceleration
-  // 1080p (H.264): Stream Copy (Instant)
-  // Use file-based progress for absolute reliability (-progress [file])
-  const ffmpegArgs = is4K
-    ? `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -b:v 20M -pix_fmt yuv420p -c:a aac -b:a 192k`
-    : `ffmpeg:-progress "${progressFilePath}" -c copy -bsf:a aac_adtstoasc`;
+  // 🎥 SMART FFMPEG: Conditional encoding based on resolution
+  // 4K/2K: Usually VP9, needs re-encoding for iMovie
+  // 1080p/720p: Usually H.264, just copy
+  const ffmpegArgs = isHighRes
+    ? // 4K/2K: Re-encode to H.264 for iMovie compatibility
+      `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -profile:v main -level 5.1 -b:v 35M -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -movflags +faststart`
+    : // 1080p/720p: Stream copy (instant)
+      `ffmpeg:-progress "${progressFilePath}" -c copy -movflags +faststart`;
 
   // 🚀 STABLE REMUX Configuration
   const args = [
