@@ -408,6 +408,7 @@ export default function Home() {
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const activeItemCancelRef = useRef<(() => void) | null>(null);
   const [cancelledItems, setCancelledItems] = useState<Set<number>>(new Set());
+  const [transcriptDownloading, setTranscriptDownloading] = useState(false);
 
   const fetchVideoInfo = async () => {
     if (!url) {
@@ -446,6 +447,48 @@ export default function Home() {
       "video",
       metadata.title
     );
+  };
+
+  // Transcript Download Handler
+  const handleTranscriptDownload = async (language: string = "hi") => {
+    if (!metadata || metadata.type !== "video") return;
+
+    setTranscriptDownloading(true);
+    try {
+      const response = await fetch("/api/transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: metadata.original_url || url,
+          language,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.transcript) {
+        // Create a blob and download it
+        const blob = new Blob([data.transcript], { type: "text/plain" });
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.download = `${metadata.title.replace(
+          /[^a-z0-9]/gi,
+          "_"
+        )}_transcript_${language}.srt`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+      } else {
+        alert(data.error || "Failed to download transcript");
+      }
+    } catch (error) {
+      console.error("Transcript download error:", error);
+      alert("Failed to download transcript. Please try again.");
+    } finally {
+      setTranscriptDownloading(false);
+    }
   };
 
   // Playlist Queue Handlers
@@ -862,6 +905,8 @@ export default function Home() {
                   <QualityTable
                     qualities={metadata.availableQualities || []}
                     onDownload={handleSingleDownload}
+                    onTranscriptDownload={handleTranscriptDownload}
+                    transcriptDownloading={transcriptDownloading}
                   />
                 )}
               </Box>

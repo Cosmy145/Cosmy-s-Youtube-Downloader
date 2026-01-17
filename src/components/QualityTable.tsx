@@ -1,8 +1,9 @@
-import { Box, Typography, IconButton } from "@mui/material";
+import { Box, Typography, IconButton, CircularProgress } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import HeadphonesIcon from "@mui/icons-material/Headphones";
-import { useState } from "react";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import { useState, useEffect, useRef } from "react";
 
 interface QualityOption {
   quality: string;
@@ -13,14 +14,32 @@ interface QualityTableProps {
   qualities: QualityOption[];
   onDownload: (quality: string) => void;
   disabled?: boolean;
+  videoUrl?: string;
+  onTranscriptDownload?: (language: string) => void;
+  transcriptDownloading?: boolean;
 }
 
 export const QualityTable = ({
   qualities,
   onDownload,
   disabled,
+  videoUrl,
+  onTranscriptDownload,
+  transcriptDownloading,
 }: QualityTableProps) => {
   const [activeTab, setActiveTab] = useState<"video" | "audio">("video");
+  const [transcriptLang, setTranscriptLang] = useState("hi");
+  const [transcriptExpanded, setTranscriptExpanded] = useState(false);
+  const wasDownloadingRef = useRef(false);
+
+  // Close accordion when download completes
+  useEffect(() => {
+    if (wasDownloadingRef.current && !transcriptDownloading) {
+      // Download just completed
+      setTranscriptExpanded(false);
+    }
+    wasDownloadingRef.current = transcriptDownloading || false;
+  }, [transcriptDownloading]);
 
   // Separate video and audio qualities - only show 360p and above for video
   const videoQualities = qualities.filter((q) => {
@@ -49,142 +68,126 @@ export const QualityTable = ({
     if (quality === "720p") return "720P HD";
     if (quality === "480p") return "480P SD";
     if (quality === "360p") return "360P SD";
+    if (quality === "audio") return "AUDIO ONLY";
 
-    // Dynamic audio bitrate handling
-    if (quality.includes("kbps") || quality === "audio") {
-      const bitrateMatch = quality.match(/(\d+)kbps/);
-      if (bitrateMatch) {
-        return `${bitrateMatch[1]}KBPS`;
-      }
-      return "BEST AUDIO";
+    // For kbps audio qualities
+    if (quality.includes("kbps")) {
+      const bitrate = parseInt(quality);
+      let label = quality.toUpperCase();
+      if (bitrate >= 192) label += " • HIGH QUALITY";
+      else if (bitrate >= 128) label += " • GOOD QUALITY";
+      else label += " • STANDARD";
+      return label;
     }
 
     return quality.toUpperCase();
   };
 
-  const getQualityDetails = (quality: string) => {
-    if (quality === "best") return "2160p • ~4 GB";
-    if (quality === "8k" || quality === "4320p") return "4320p • ~12 GB";
-    if (quality === "5k" || quality === "2880p") return "2880p • ~7 GB";
-    if (quality === "4k" || quality === "2160p") return "2160p • ~4 GB";
-    if (quality === "1440p") return "1440p • ~1.5 GB";
-    if (quality === "1080p") return "1080p • ~859 MB";
-    if (quality === "720p") return "720p • ~320 MB";
-    if (quality === "480p") return "480p • ~180 MB";
-    if (quality === "360p") return "360p • ~120 MB";
+  const getSizeEstimate = (quality: string) => {
+    // High resolution video estimates
+    if (quality === "8k" || quality === "4320p") return "~8 GB";
+    if (quality === "5k" || quality === "2880p") return "~6 GB";
+    if (quality === "4k" || quality === "2160p" || quality === "best")
+      return "~4 GB";
 
-    // Dynamic audio size estimation (rough: bitrate * 3.5 minutes average song)
+    // Standard resolution video estimates
+    if (quality === "1440p") return "~2.5 GB";
+    if (quality === "1080p") return "~1.5 GB";
+    if (quality === "720p") return "~800 MB";
+    if (quality === "480p") return "~400 MB";
+    if (quality === "360p") return "~200 MB";
+
+    // Audio estimates based on bitrate
     if (quality.includes("kbps")) {
-      const bitrateMatch = quality.match(/(\d+)kbps/);
-      if (bitrateMatch) {
-        const bitrate = parseInt(bitrateMatch[1]);
-        const estimatedMB = Math.round((bitrate * 210) / 8000); // 3.5 min * 60 sec = 210 sec
-
-        if (bitrate >= 256) return `high quality • ~${estimatedMB} MB`;
-        if (bitrate >= 160) return `good quality • ~${estimatedMB} MB`;
-        return `standard • ~${estimatedMB} MB`;
-      }
+      const bitrate = parseInt(quality);
+      if (bitrate >= 192) return "~15 MB";
+      if (bitrate >= 160) return "~12 MB";
+      if (bitrate >= 128) return "~10 MB";
+      return "~8 MB";
     }
 
-    if (quality === "audio") return "best quality • ~18 MB";
-    return "standard quality";
+    if (quality === "audio") return "~10 MB";
+
+    return null;
   };
 
-  const getFormatBadge = (quality: string) => {
-    if (quality === "audio" || quality.includes("kbps")) {
-      return "MP3";
-    }
-    return "MP4";
-  };
+  const currentQualities =
+    activeTab === "video" ? videoQualities : audioQualities;
 
   const QualityRow = ({ quality }: { quality: string }) => (
     <Box
+      onClick={() => !disabled && onDownload(quality)}
       sx={{
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        p: 2.5,
-        mb: 2,
-        bgcolor: "rgba(255,255,255,0.02)",
+        py: 2,
+        px: 3,
+        mb: 1.5,
+        bgcolor: "rgba(255,255,255,0.03)",
         border: "1px solid rgba(255,255,255,0.1)",
         borderRadius: "8px",
-        transition: "all 0.2s",
         cursor: disabled ? "not-allowed" : "pointer",
+        transition: "all 0.2s",
         opacity: disabled ? 0.5 : 1,
         "&:hover": disabled
           ? {}
           : {
-              bgcolor: "rgba(255,255,255,0.05)",
+              bgcolor: "rgba(255,255,255,0.06)",
               borderColor: "rgba(255,255,255,0.2)",
             },
       }}
     >
-      <Box sx={{ display: "flex", alignItems: "center", gap: 2, flex: 1 }}>
-        {/* Format Badge */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
         <Box
           sx={{
-            bgcolor: "#000",
-            border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: "4px",
-            px: 1,
-            py: 0.5,
-            minWidth: 45,
-            textAlign: "center",
+            width: 8,
+            height: 8,
+            bgcolor: "#FF0000",
+            borderRadius: "50%",
           }}
-        >
-          <Typography
-            sx={{
-              fontSize: "11px",
-              fontWeight: 700,
-              color: "#fff",
-            }}
-          >
-            {getFormatBadge(quality)}
-          </Typography>
-        </Box>
-
-        {/* Quality Info */}
+        />
         <Box>
           <Typography
             sx={{
-              fontSize: "16px",
+              fontSize: "14px",
               fontWeight: 700,
               color: "#fff",
-              mb: 0.5,
+              letterSpacing: "0.5px",
             }}
           >
             {getQualityLabel(quality)}
           </Typography>
-          <Typography
-            sx={{
-              fontSize: "12px",
-              color: "rgba(255,255,255,0.5)",
-            }}
-          >
-            {getQualityDetails(quality)}
-          </Typography>
+          {getSizeEstimate(quality) && (
+            <Typography
+              sx={{
+                fontSize: "11px",
+                color: "rgba(255,255,255,0.5)",
+                mt: 0.3,
+              }}
+            >
+              Approx. {getSizeEstimate(quality)}
+            </Typography>
+          )}
         </Box>
       </Box>
 
-      {/* Download Button */}
       <IconButton
-        onClick={() => !disabled && onDownload(quality)}
         disabled={disabled}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDownload(quality);
+        }}
         sx={{
-          color: "rgba(255,255,255,0.6)",
-          "&:hover": {
-            color: "#FF0000",
-            bgcolor: "rgba(255,0,0,0.1)",
-          },
+          color: "#fff",
+          bgcolor: "rgba(255,0,0,0.1)",
+          "&:hover": { bgcolor: "rgba(255,0,0,0.2)" },
         }}
       >
         <DownloadIcon />
       </IconButton>
     </Box>
   );
-
-  const currentQualities =
-    activeTab === "video" ? videoQualities : audioQualities;
 
   return (
     <Box>
@@ -193,7 +196,7 @@ export const QualityTable = ({
         sx={{
           display: "flex",
           gap: 0,
-          mb: 4,
+          mb: 3,
           bgcolor: "rgba(255,255,255,0.02)",
           border: "1px solid rgba(255,255,255,0.1)",
           borderRadius: "8px",
@@ -293,6 +296,204 @@ export const QualityTable = ({
           <QualityRow key={q.quality} quality={q.quality} />
         ))}
       </Box>
+
+      {/* Transcript Download Accordion */}
+      {onTranscriptDownload && (
+        <Box
+          sx={{
+            mt: 3,
+            pt: 3,
+            borderTop: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          {/* Accordion Header */}
+          <Box
+            onClick={() => setTranscriptExpanded(!transcriptExpanded)}
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              py: 2,
+              px: 3,
+              bgcolor: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: transcriptExpanded ? "8px 8px 0 0" : "8px",
+              cursor: "pointer",
+              transition: "all 0.2s",
+              "&:hover": {
+                bgcolor: "rgba(255,255,255,0.06)",
+                borderColor: "rgba(255,255,255,0.2)",
+              },
+            }}
+          >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Box
+                component="svg"
+                sx={{ width: 24, height: 24, fill: "#fff" }}
+                viewBox="0 0 24 24"
+              >
+                <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M7,11H17V13H7V11M7,15H17V17H7V15Z" />
+              </Box>
+              <Box>
+                <Typography
+                  sx={{
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    color: "#fff",
+                    letterSpacing: "0.5px",
+                  }}
+                >
+                  TRANSCRIPT
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: "11px",
+                    color: "rgba(255,255,255,0.5)",
+                    mt: 0.3,
+                  }}
+                >
+                  {transcriptExpanded
+                    ? "Select language"
+                    : `Download (${transcriptLang.toUpperCase()})`}
+                </Typography>
+              </Box>
+            </Box>
+
+            <ExpandMoreIcon
+              sx={{
+                color: "#fff",
+                transform: transcriptExpanded
+                  ? "rotate(180deg)"
+                  : "rotate(0deg)",
+                transition: "transform 0.3s",
+              }}
+            />
+          </Box>
+
+          {/* Accordion Content - Language Selection */}
+          {transcriptExpanded && (
+            <Box
+              sx={{
+                bgcolor: "rgba(255,255,255,0.02)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                borderTop: "none",
+                borderRadius: "0 0 8px 8px",
+                p: 3,
+              }}
+            >
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "rgba(255,255,255,0.5)",
+                  mb: 2,
+                }}
+              >
+                SELECT LANGUAGE:
+              </Typography>
+
+              {/* Language Options */}
+              <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap", mb: 3 }}>
+                {[
+                  { code: "hi", label: "Hindi" },
+                  { code: "en", label: "English" },
+                  { code: "es", label: "Spanish" },
+                  { code: "fr", label: "French" },
+                ].map((lang) => (
+                  <Box
+                    key={lang.code}
+                    onClick={() => setTranscriptLang(lang.code)}
+                    sx={{
+                      px: 3,
+                      py: 1.5,
+                      bgcolor:
+                        transcriptLang === lang.code
+                          ? "#FF0000"
+                          : "rgba(255,255,255,0.05)",
+                      border: `1px solid ${
+                        transcriptLang === lang.code
+                          ? "#FF0000"
+                          : "rgba(255,255,255,0.1)"
+                      }`,
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                      "&:hover": {
+                        bgcolor:
+                          transcriptLang === lang.code
+                            ? "#CC0000"
+                            : "rgba(255,255,255,0.08)",
+                        borderColor:
+                          transcriptLang === lang.code
+                            ? "#CC0000"
+                            : "rgba(255,255,255,0.2)",
+                      },
+                    }}
+                  >
+                    <Typography
+                      sx={{
+                        fontSize: "14px",
+                        fontWeight: 700,
+                        color: "#fff",
+                      }}
+                    >
+                      {lang.label}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+
+              {/* Download Button */}
+              <Box
+                onClick={() => {
+                  if (!disabled && !transcriptDownloading) {
+                    onTranscriptDownload(transcriptLang);
+                  }
+                }}
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 1.5,
+                  py: 2,
+                  px: 3,
+                  bgcolor: "#FF0000",
+                  borderRadius: "8px",
+                  cursor:
+                    disabled || transcriptDownloading
+                      ? "not-allowed"
+                      : "pointer",
+                  opacity: disabled || transcriptDownloading ? 0.5 : 1,
+                  transition: "all 0.2s",
+                  "&:hover": {
+                    bgcolor:
+                      disabled || transcriptDownloading ? "#FF0000" : "#CC0000",
+                  },
+                }}
+              >
+                {transcriptDownloading ? (
+                  <>
+                    <CircularProgress size={20} sx={{ color: "#fff" }} />
+                    <Typography
+                      sx={{ fontSize: "14px", fontWeight: 700, color: "#fff" }}
+                    >
+                      Downloading...
+                    </Typography>
+                  </>
+                ) : (
+                  <>
+                    <DownloadIcon sx={{ fontSize: 20 }} />
+                    <Typography
+                      sx={{ fontSize: "14px", fontWeight: 700, color: "#fff" }}
+                    >
+                      Download {transcriptLang.toUpperCase()} Transcript
+                    </Typography>
+                  </>
+                )}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )}
     </Box>
   );
 };

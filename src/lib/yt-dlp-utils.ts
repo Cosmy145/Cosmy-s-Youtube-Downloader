@@ -757,3 +757,92 @@ export function cleanupDownloadArtifacts(downloadId: string) {
     console.error("[Cleanup] Error scanning directory:", err);
   }
 }
+
+/**
+ * Fetches video transcript/subtitles
+ */
+export async function getVideoTranscript(
+  url: string,
+  language: string = "hi"
+): Promise<string> {
+  if (!validateYouTubeUrl(url)) {
+    throw new Error("Invalid YouTube URL");
+  }
+
+  const path = await import("path");
+  const os = await import("os");
+  const fs = await import("fs");
+
+  const tempDir = os.tmpdir();
+  const timestamp = Date.now();
+  const outputTemplate = path.join(tempDir, `transcript_${timestamp}`);
+
+  console.log(`[Transcript] Fetching transcript for: ${url}`);
+  console.log(`[Transcript] Requested language: ${language.toUpperCase()}`);
+
+  try {
+    // Try requested language first
+    let command = `yt-dlp --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+    console.log(
+      `[Transcript] Attempting ${language.toUpperCase()} subtitles...`
+    );
+
+    try {
+      await execPromise(command);
+    } catch (langError) {
+      // If requested language fails, try English as fallback (unless already English)
+      if (language !== "en") {
+        console.log(
+          `[Transcript] ${language.toUpperCase()} not available, trying English...`
+        );
+        command = `yt-dlp --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+        await execPromise(command);
+      } else {
+        throw langError;
+      }
+    }
+
+    // Find the generated subtitle file
+    const files = fs.readdirSync(tempDir);
+    const subFile = files.find(
+      (f) => f.startsWith(`transcript_${timestamp}`) && f.endsWith(".srt")
+    );
+
+    if (!subFile) {
+      console.log(`[Transcript] ❌ No subtitle file found`);
+      throw new Error("No transcript/subtitles available for this video");
+    }
+
+    // Detect language from filename (e.g., transcript_123.hi.srt or transcript_123.en.srt)
+    const langMatch = subFile.match(/\.([a-z]{2,3})\.srt$/);
+    const detectedLang = langMatch ? langMatch[1] : "unknown";
+
+    console.log(`[Transcript] ✓ Found subtitle file: ${subFile}`);
+    console.log(
+      `[Transcript] ✓ Language detected: ${detectedLang.toUpperCase()}`
+    );
+
+    const subFilePath = path.join(tempDir, subFile);
+    const content = fs.readFileSync(subFilePath, "utf-8");
+
+    // Clean up the subtitle file
+    try {
+      fs.unlinkSync(subFilePath);
+      console.log(`[Transcript] ✓ Cleaned up temporary file`);
+    } catch (e) {
+      console.warn("[Transcript] Failed to delete transcript file:", e);
+    }
+
+    console.log(
+      `[Transcript] ✓ Successfully fetched ${detectedLang.toUpperCase()} transcript (${
+        content.length
+      } characters)`
+    );
+    return content;
+  } catch (error: any) {
+    console.error(`[Transcript] ❌ Error:`, error.message);
+    throw new Error(
+      `Failed to fetch transcript: ${error.message || "Unknown error"}`
+    );
+  }
+}
