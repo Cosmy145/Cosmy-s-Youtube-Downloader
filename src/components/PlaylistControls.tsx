@@ -379,7 +379,7 @@ export const PlaylistControls = ({
               <Typography
                 sx={{ color: "rgba(255,255,255,0.6)", fontSize: "14px" }}
               >
-                {queueIndex} / {itemCount} completed
+                {queueIndex >= 0 ? queueIndex : 0} / {itemCount || 0} completed
               </Typography>
             </>
           )}
