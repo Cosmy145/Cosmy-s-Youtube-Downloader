@@ -17,6 +17,11 @@ export default function Home() {
   const [url, setUrl] = useState("");
   const router = useRouter();
 
+  // Set page title immediately
+  if (typeof window !== "undefined") {
+    document.title = "Cosmy's Youtube Downloader";
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedUrl = url.trim();

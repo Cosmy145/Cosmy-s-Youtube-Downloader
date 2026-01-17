@@ -54,6 +54,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        <title>Cosmy's Youtube Downloader</title>
+        <meta
+          name="description"
+          content="Download YouTube videos and playlists in 4K quality"
+        />
+      </head>
       <body className={inter.className}>
         <ThemeProvider theme={darkTheme}>
           <CssBaseline />
