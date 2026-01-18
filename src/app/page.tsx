@@ -61,16 +61,6 @@ export default function Home() {
                   "&:hover": { color: "#FF0000" },
                 }}
               >
-                HOME
-              </Typography>
-              <Typography
-                sx={{
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  "&:hover": { color: "#FF0000" },
-                }}
-              >
                 FAQ
               </Typography>
             </Box>
