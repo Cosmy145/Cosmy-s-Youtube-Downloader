@@ -318,8 +318,8 @@ export async function downloadVideoToDisk(
   // 4K/2K: Usually VP9, needs re-encoding for iMovie
   // 1080p/720p: Usually H.264, just copy
   const ffmpegArgs = isHighRes
-    ? // 4K/2K: Re-encode to H.264 for iMovie compatibility
-      `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -profile:v main -level 5.1 -b:v 35M -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -movflags +faststart`
+    ? // 4K/2K: Re-encode to H.264 for iMovie compatibility (using software encoder for Railway)
+      `ffmpeg:-progress "${progressFilePath}" -c:v libx264 -preset faster -profile:v main -level 5.1 -b:v 35M -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -movflags +faststart`
     : // 1080p/720p: Stream copy (instant)
       `ffmpeg:-progress "${progressFilePath}" -c copy -movflags +faststart`;
 
