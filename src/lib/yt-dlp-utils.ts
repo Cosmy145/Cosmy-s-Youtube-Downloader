@@ -12,6 +12,15 @@ function getYtDlpPath(): string {
 }
 
 /**
+ * Get cookies flag for yt-dlp (only in development)
+ */
+function getCookiesFlag(): string {
+  return process.env.NODE_ENV === "production"
+    ? ""
+    : "--cookies-from-browser chrome";
+}
+
+/**
  * Validates if a URL is a valid YouTube URL
  */
 export function validateYouTubeUrl(url: string): boolean {
@@ -31,9 +40,10 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
     // -J returns a single JSON object (better for playlists)
     // --flat-playlist gets playlist items without downloading details for each
     // --no-warnings suppresses warnings
-    // --cookies-from-browser chrome uses Chrome cookies for authentication
+    // --cookies-from-browser chrome uses Chrome cookies (only in dev)
+
     const { stdout } = await execPromise(
-      `${getYtDlpPath()} -j --flat-playlist --cookies-from-browser chrome --no-warnings "${url}"`
+      `${getYtDlpPath()} -j --flat-playlist ${getCookiesFlag()} --no-warnings "${url}"`.trim()
     );
 
     let mainMetadata: any = null;
@@ -334,9 +344,10 @@ export async function downloadVideoToDisk(
       "32",
       "--no-check-certificate",
 
-      // Authentication
-      "--cookies-from-browser",
-      "chrome",
+      // Authentication (only in development)
+      ...(process.env.NODE_ENV !== "production"
+        ? ["--cookies-from-browser", "chrome"]
+        : []),
 
       "-o",
       filePath,
@@ -789,7 +800,8 @@ export async function getVideoTranscript(
 
   try {
     // Try requested language first
-    let command = `yt-dlp --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+    let command =
+      `yt-dlp --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt ${getCookiesFlag()} -o "${outputTemplate}" "${url}"`.trim();
     console.log(
       `[Transcript] Attempting ${language.toUpperCase()} subtitles...`
     );
@@ -802,7 +814,8 @@ export async function getVideoTranscript(
         console.log(
           `[Transcript] ${language.toUpperCase()} not available, trying English...`
         );
-        command = `yt-dlp --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+        command =
+          `yt-dlp --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt ${getCookiesFlag()} -o \"${outputTemplate}\" \"${url}\"`.trim();
         await execPromise(command);
       } else {
         throw langError;
