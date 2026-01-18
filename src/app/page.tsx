@@ -12,6 +12,7 @@ import {
   AppBar,
   Toolbar,
 } from "@mui/material";
+import { Logo } from "@/components/common";
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -44,21 +45,7 @@ export default function Home() {
         <Container maxWidth="xl">
           <Toolbar sx={{ justifyContent: "space-between", py: 2 }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Box
-                sx={{
-                  width: 32,
-                  height: 32,
-                  bgcolor: "#FF0000",
-                  borderRadius: "4px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Typography sx={{ fontSize: "20px", fontWeight: 900 }}>
-                  ▶
-                </Typography>
-              </Box>
+              <Logo size={32} />
               <Typography
                 sx={{ fontSize: "16px", fontWeight: 700, letterSpacing: "1px" }}
               >
@@ -386,14 +373,7 @@ export default function Home() {
               <Box
                 sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}
               >
-                <Box
-                  sx={{
-                    width: 24,
-                    height: 24,
-                    bgcolor: "#FF0000",
-                    borderRadius: "2px",
-                  }}
-                />
+                <Logo size={24} />
                 <Typography sx={{ fontSize: "14px", fontWeight: 700 }}>
                   COSMY'S YOUTUBE DOWNLOADER
                 </Typography>

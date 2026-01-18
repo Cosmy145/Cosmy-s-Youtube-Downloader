@@ -60,6 +60,7 @@ export default function RootLayout({
           name="description"
           content="Download YouTube videos and playlists in 4K quality"
         />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
       </head>
       <body className={inter.className}>
         <ThemeProvider theme={darkTheme}>
