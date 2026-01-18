@@ -369,9 +369,10 @@ export async function downloadVideoToDisk(
       "32",
       "--no-check-certificate",
 
-      // Authentication: Use Chrome cookies to bypass bot detection
-      "--cookies-from-browser",
-      "chrome",
+      // Authentication (only in development)
+      ...(process.env.NODE_ENV !== "production"
+        ? ["--cookies-from-browser", "chrome"]
+        : []),
 
       // Post-Process (Remux)
       "--postprocessor-args",
