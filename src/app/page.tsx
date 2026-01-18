@@ -73,16 +73,6 @@ export default function Home() {
               >
                 FAQ
               </Typography>
-              <Typography
-                sx={{
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  "&:hover": { color: "#FF0000" },
-                }}
-              >
-                CONTACT
-              </Typography>
             </Box>
           </Toolbar>
         </Container>
@@ -408,17 +398,6 @@ export default function Home() {
               >
                 Features
               </Typography>
-              <Typography
-                sx={{
-                  fontSize: "12px",
-                  color: "#999",
-                  mb: 1,
-                  cursor: "pointer",
-                  "&:hover": { color: "#fff" },
-                }}
-              >
-                Extension
-              </Typography>
             </Box>
 
             <Box>
@@ -442,17 +421,6 @@ export default function Home() {
                 }}
               >
                 FAQ
-              </Typography>
-              <Typography
-                sx={{
-                  fontSize: "12px",
-                  color: "#999",
-                  mb: 1,
-                  cursor: "pointer",
-                  "&:hover": { color: "#fff" },
-                }}
-              >
-                Contact
               </Typography>
             </Box>
 
