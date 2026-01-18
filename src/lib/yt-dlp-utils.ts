@@ -1,8 +1,15 @@
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import type { VideoMetadata } from "@/types";
+import path from "path";
+import fs from "fs";
 
 const execPromise = promisify(exec);
+
+function getYtDlpPath(): string {
+  const localBinary = path.join(process.cwd(), "bin", "yt-dlp");
+  return fs.existsSync(localBinary) ? localBinary : "yt-dlp";
+}
 
 /**
  * Validates if a URL is a valid YouTube URL
@@ -26,7 +33,7 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
     // --no-warnings suppresses warnings
     // --cookies-from-browser chrome uses Chrome cookies for authentication
     const { stdout } = await execPromise(
-      `yt-dlp -J --flat-playlist --no-warnings --no-check-certificate --cookies-from-browser chrome "${url}"`
+      `${getYtDlpPath()} -j --flat-playlist --cookies-from-browser chrome --no-warnings "${url}"`
     );
 
     let mainMetadata: any = null;
@@ -370,7 +377,7 @@ export async function downloadVideoToDisk(
 
   return new Promise((resolve, reject) => {
     // Force Python to flush stdout/stderr immediately (no buffering)
-    const ytDlpProcess = spawn("yt-dlp", args, {
+    const ytDlpProcess = spawn(getYtDlpPath(), args, {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
       signal, // Pass the abort signal
     });
@@ -693,7 +700,7 @@ export async function downloadVideoToDisk(
       } else {
         finish(
           new Error(
-            `yt-dlp exited with code ${code}. Error: ${
+            `${getYtDlpPath()} exited with code ${code}. Error: ${
               lastError || "Unknown error"
             }`
           )
@@ -714,7 +721,7 @@ export async function downloadVideoToDisk(
 export async function getVideoFilename(url: string): Promise<string> {
   try {
     const { stdout } = await execPromise(
-      `yt-dlp --get-filename -o "%(title)s.%(ext)s" --no-warnings --no-check-certificate --cookies-from-browser chrome "${url}"`
+      `${getYtDlpPath()} --get-filename -o "%(title)s.%(ext)s" --no-warnings "${url}"`
     );
     return stdout.trim();
   } catch (error) {

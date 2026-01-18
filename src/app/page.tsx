@@ -15,26 +15,83 @@ import {
 
 export default function Home() {
   const [url, setUrl] = useState("");
-  const router = useRouter();
-
-  // Set page title immediately
-  if (typeof window !== "undefined") {
+  useEffect(() => {
     document.title = "Cosmy's Youtube Downloader";
-  }
+  }, []);
+  const [loading, setLoading] = useState(false);
+  const [metadata, setMetadata] = useState<
+    | (VideoMetadata & {
+        availableQualities?: { quality: string; hasAudio: boolean }[];
+      })
+    | null
+  >(null);
+  const [error, setError] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedUrl = url.trim();
-    if (trimmedUrl) {
-      router.push(`/download?url=${encodeURIComponent(trimmedUrl)}`);
+  // Single Video State
+  const singleDownload = useDownload();
+
+  // Playlist State
+  const [playlistQuality, setPlaylistQuality] = useState("best");
+  const [queueIndex, setQueueIndex] = useState(-1);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+
+  const fetchVideoInfo = async () => {
+    if (!url) {
+      setError("Please enter URL");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    setMetadata(null);
+    setIsQueueRunning(false);
+    setQueueIndex(-1); // Reset playlist state
+
+    try {
+      const response = await fetch("/api/metadata", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await response.json();
+      if (data.success) setMetadata(data.data);
+      else setError(data.error || "Failed to fetch info");
+    } catch (err) {
+      setError("Network error");
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <Box sx={{ bgcolor: "#000", minHeight: "100vh", color: "#fff" }}>
-      {/* Header */}
-      <AppBar
-        position="static"
+    <Container maxWidth="lg" sx={{ py: 8 }}>
+      <Box sx={{ textAlign: "center", mb: 8 }}>
+        <Typography
+          variant="h2"
+          sx={{
+            fontWeight: 800,
+            background:
+              "linear-gradient(135deg, #a29bfe 0%, #6c5ce7 50%, #00d2d3 100%)",
+            backgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            fontSize: { xs: "2.5rem", md: "4rem" },
+            mb: 2,
+            letterSpacing: "-0.02em",
+          }}
+        >
+          Cosmy's Youtube Downloader
+        </Typography>
+        <Typography
+          variant="h5"
+          color="text.secondary"
+          sx={{ fontWeight: 400, opacity: 0.8 }}
+        >
+          Premium Quality Downloads • Playlists • 4K Support
+        </Typography>
+      </Box>
+
+      <Paper
+        elevation={0}
+        component="form"
         sx={{
           bgcolor: "#000",
           boxShadow: "none",
