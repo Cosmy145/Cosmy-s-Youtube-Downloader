@@ -1,11 +1,4 @@
-import {
-  Box,
-  Card,
-  CardContent,
-  CardMedia,
-  Typography,
-  Chip,
-} from "@mui/material";
+import { Box, Typography } from "@mui/material";
 
 interface VideoMetadataCardProps {
   thumbnail: string;
@@ -22,59 +15,161 @@ export const VideoMetadataCard = ({
   duration,
   viewCount,
 }: VideoMetadataCardProps) => {
+  // Split title to highlight the last part in red (if contains certain keywords)
+  const highlightTitle = (titleText: string) => {
+    const parts = titleText.split(/(\bLIVE\b|\bSET\b)/gi);
+    return parts.map((part, i) => {
+      if (/live|set/i.test(part)) {
+        return (
+          <Box component="span" key={i} sx={{ color: "#FF0000" }}>
+            {part}
+          </Box>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
+
+  const formatViews = (views?: number) => {
+    if (!views) return "0";
+    if (views >= 1000000) {
+      return `${(views / 1000000).toFixed(1)}M`;
+    }
+    if (views >= 1000) {
+      return `${(views / 1000).toFixed(1)}K`;
+    }
+    return views.toString();
+  };
+
   return (
-    <Card
-      sx={{
-        display: "flex",
-        mb: 4, // More spacing
-        background:
-          "linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%)",
-        backdropFilter: "blur(20px)",
-        border: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: 4,
-        boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
-        overflow: "hidden", // Ensure border radius clips content
-        transition: "transform 0.3s ease, box-shadow 0.3s ease",
-        "&:hover": {
-          transform: "translateY(-4px)",
-          boxShadow: "0 12px 40px rgba(0,0,0,0.4)",
-        },
-      }}
-    >
-      <CardMedia
-        component="img"
-        sx={{ width: 400, objectFit: "cover" }}
-        image={thumbnail}
-        alt={title}
-      />
-      <Box sx={{ display: "flex", flexDirection: "column", flex: 1 }}>
-        <CardContent sx={{ flex: "1 0 auto" }}>
+    <Box sx={{ mb: 4 }}>
+      {/* Video Thumbnail */}
+      <Box
+        sx={{
+          position: "relative",
+          width: "100%",
+          maxWidth: "700px",
+          aspectRatio: "16/9",
+          bgcolor: "#1a1a1a",
+          border: "2px solid rgba(255,255,255,0.15)",
+          borderRadius: "8px",
+          overflow: "hidden",
+          mb: 3,
+        }}
+      >
+        <Box
+          component="img"
+          src={thumbnail}
+          alt={title}
+          sx={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+          }}
+        />
+      </Box>
+
+      {/* Video Title */}
+      <Typography
+        sx={{
+          fontSize: { xs: "28px", md: "40px" },
+          fontWeight: 900,
+          lineHeight: 1.2,
+          color: "#fff",
+          mb: 3,
+          textTransform: "uppercase",
+        }}
+      >
+        {highlightTitle(title)}
+      </Typography>
+
+      {/* Video Stats */}
+      <Box sx={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <Box>
           <Typography
-            component="div"
-            variant="h5"
-            sx={{ mb: 1, fontWeight: "bold" }}
+            sx={{
+              fontSize: "10px",
+              color: "rgba(255,255,255,0.4)",
+              mb: 0.5,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+            }}
           >
-            {title}
+            DURATION
           </Typography>
           <Typography
-            variant="subtitle1"
-            color="text.secondary"
-            component="div"
+            sx={{
+              fontSize: "16px",
+              color: "#fff",
+              fontWeight: 600,
+            }}
+          >
+            {duration}
+          </Typography>
+        </Box>
+
+        <Box
+          sx={{
+            width: "2px",
+            height: "30px",
+            bgcolor: "#FF0000",
+          }}
+        />
+
+        <Box>
+          <Typography
+            sx={{
+              fontSize: "10px",
+              color: "rgba(255,255,255,0.4)",
+              mb: 0.5,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+            }}
+          >
+            VIEWS
+          </Typography>
+          <Typography
+            sx={{
+              fontSize: "16px",
+              color: "#fff",
+              fontWeight: 600,
+            }}
+          >
+            {formatViews(viewCount)}
+          </Typography>
+        </Box>
+
+        <Box
+          sx={{
+            width: "2px",
+            height: "30px",
+            bgcolor: "#FF0000",
+          }}
+        />
+
+        <Box>
+          <Typography
+            sx={{
+              fontSize: "10px",
+              color: "rgba(255,255,255,0.4)",
+              mb: 0.5,
+              textTransform: "uppercase",
+              letterSpacing: "1px",
+            }}
+          >
+            CREATOR
+          </Typography>
+          <Typography
+            sx={{
+              fontSize: "16px",
+              color: "#fff",
+              fontWeight: 600,
+            }}
           >
             {uploader}
           </Typography>
-          <Box sx={{ mt: 2, display: "flex", gap: 1 }}>
-            <Chip label={duration} size="small" variant="outlined" />
-            {viewCount && (
-              <Chip
-                label={`${viewCount.toLocaleString()} views`}
-                size="small"
-                variant="outlined"
-              />
-            )}
-          </Box>
-        </CardContent>
+        </Box>
       </Box>
-    </Card>
+    </Box>
   );
 };

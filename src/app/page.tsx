@@ -1,269 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Container,
   Box,
   Typography,
   Paper,
-  TextField,
   InputBase,
   Button,
-  Alert,
-  CircularProgress,
+  AppBar,
+  Toolbar,
 } from "@mui/material";
-import SearchIcon from "@mui/icons-material/Search";
-import { VideoMetadataCard } from "@/components/VideoMetadataCard";
-import { QualityTable } from "@/components/QualityTable";
-import { DetailedProgressBar } from "@/components/DetailedProgressBar";
-import { PlaylistControls } from "@/components/PlaylistControls";
-import { PlaylistItemAccordion } from "@/components/PlaylistItemAccordion";
-import type { VideoMetadata, PlaylistItem, PlaylistMetadata } from "@/types";
-
-// --- Hook Definition (kept inline for simplicity as requested, but cleaned up) ---
-const useDownload = () => {
-  const [downloading, setDownloading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [serverProgress, setServerProgress] = useState<any>({
-    percent: 0,
-    phase: "idle",
-  });
-  const [error, setError] = useState("");
-  const downloadIdRef = useRef<string | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-
-  // Helper to extract stats
-  const getMergeStats = (duration: number) => {
-    let currentSeconds = 0;
-    if (serverProgress?.mergedSeconds !== undefined) {
-      currentSeconds = serverProgress.mergedSeconds;
-    } else if (
-      typeof serverProgress?.total === "string" &&
-      serverProgress.total.includes("@")
-    ) {
-      try {
-        const timeStr = serverProgress.total.split("@")[0].trim();
-        const parts = timeStr.split(":").map((p: string) => parseFloat(p));
-        if (parts.length === 3)
-          currentSeconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
-        else if (parts.length === 2) currentSeconds = parts[0] * 60 + parts[1];
-      } catch (e) {}
-    }
-
-    const percent =
-      duration > 0
-        ? Math.min(100, Math.max(0, (currentSeconds / duration) * 100))
-        : 0;
-
-    let eta = "...";
-    if (duration > 0 && currentSeconds > 0) {
-      const remaining = duration - currentSeconds;
-      let speedVal = 1;
-      if (serverProgress?.total) {
-        const match = (serverProgress.total as string).match(/@\s*([\d.]+)x/);
-        if (match) speedVal = parseFloat(match[1]);
-      }
-      if (speedVal > 0) {
-        const etaSeconds = remaining / speedVal;
-        const m = Math.floor(etaSeconds / 60);
-        const s = Math.floor(etaSeconds % 60);
-        eta = `${m}:${s.toString().padStart(2, "0")}`;
-      }
-    }
-    return { percent, eta, currentSeconds };
-  };
-
-  const startDownload = useCallback(
-    async (
-      url: string,
-      quality: string,
-      format: string = "video",
-      title?: string
-    ) => {
-      setDownloading(true);
-      setError("");
-      setProgress(0);
-      setServerProgress({ phase: "starting", percent: 0 });
-
-      const downloadId = `dl_${Date.now()}_${Math.random()
-        .toString(36)
-        .substr(2, 5)}`;
-      downloadIdRef.current = downloadId;
-
-      let eventSource: EventSource | null = null;
-      let isCompleted = false;
-
-      try {
-        eventSource = new EventSource(`/api/download?id=${downloadId}`);
-        eventSourceRef.current = eventSource;
-        eventSource.onmessage = (e) => {
-          if (isCompleted) return;
-          try {
-            const d = JSON.parse(e.data);
-            setServerProgress({ ...d, phase: d.status || "downloading" });
-            if (d.status === "streaming" && d.downloaded !== "Merging") {
-              isCompleted = true;
-              setProgress(100);
-              setDownloading(false);
-              eventSource?.close();
-            }
-          } catch (err) {}
-        };
-        eventSource.onerror = () => {
-          if (!isCompleted) {
-            isCompleted = true;
-            setDownloading(false);
-            eventSource?.close();
-          }
-        };
-
-        const params = new URLSearchParams({
-          url,
-          quality,
-          format,
-          id: downloadId,
-        });
-        if (title) params.append("title", title);
-
-        const iframe = document.createElement("iframe");
-        iframe.style.display = "none";
-        iframe.src = `/api/download?${params.toString()}`;
-        document.body.appendChild(iframe);
-
-        setTimeout(() => {
-          if (document.body.contains(iframe)) document.body.removeChild(iframe);
-        }, 600000);
-      } catch (err: any) {
-        setError(err.message);
-        setDownloading(false);
-        eventSource?.close();
-      }
-    },
-    []
-  );
-
-  const cancelDownload = useCallback(async () => {
-    if (!downloadIdRef.current) return;
-    try {
-      await fetch(`/api/download?id=${downloadIdRef.current}`, {
-        method: "DELETE",
-      });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setDownloading(false);
-      setProgress(-1);
-      setServerProgress({});
-      downloadIdRef.current = null;
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
-    }
-  }, []);
-
-  return {
-    downloading,
-    serverProgress,
-    error,
-    startDownload,
-    cancelDownload,
-    getMergeStats,
-    progress,
-  };
-};
-
-const formatDuration = (seconds?: number) => {
-  if (!seconds) return "--:--";
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins}:${secs.toString().padStart(2, "0")}`;
-};
-
-// --- Sub-component for Playlist Item Logic ---
-const PlaylistRowItem = ({
-  item,
-  index,
-  isActive,
-  onComplete,
-  defaultQuality,
-}: {
-  item: PlaylistItem;
-  index: number;
-  isActive: boolean;
-  onComplete: () => void;
-  defaultQuality: string;
-}) => {
-  const dl = useDownload();
-  const [status, setStatus] = useState<
-    "idle" | "downloading" | "completed" | "error"
-  >("idle");
-  const [expanded, setExpanded] = useState(false);
-
-  // Auto-start queue logic
-  useEffect(() => {
-    if (isActive && status === "idle") {
-      setStatus("downloading");
-      dl.startDownload(item.url, defaultQuality, "video", item.title).catch(
-        () => setStatus("error")
-      );
-    }
-  }, [isActive, status, item.url, defaultQuality, item.title, dl]);
-
-  // Completion watcher
-  useEffect(() => {
-    if (status === "downloading" && dl.progress === 100) {
-      setStatus("completed");
-      onComplete();
-    } else if (status === "downloading" && dl.error) {
-      setStatus("error");
-      onComplete(); // Advance even on error
-    }
-  }, [dl.progress, dl.error, status, onComplete]);
-
-  // Manual Download Trigger
-  const handleManualDownload = (q: string) => {
-    setStatus("downloading");
-    dl.startDownload(item.url, q, "video", item.title);
-  };
-
-  // Stats Calculation
-  const mergeStats = dl.getMergeStats(item.duration);
-  const displayPercent =
-    dl.serverProgress.downloaded === "Merging"
-      ? mergeStats.percent
-      : dl.serverProgress.percent;
-  const displayEta =
-    dl.serverProgress.downloaded === "Merging"
-      ? mergeStats.eta
-      : dl.serverProgress.eta;
-
-  // Construct displayStats object for accordion
-  const displayStatsObj = { percent: displayPercent, eta: displayEta };
-
-  const qualities = [
-    { quality: "best", hasAudio: true },
-    { quality: "1080p", hasAudio: true },
-    { quality: "720p", hasAudio: true },
-    { quality: "audio", hasAudio: true },
-  ];
-
-  return (
-    <PlaylistItemAccordion
-      item={item}
-      index={index}
-      expanded={expanded}
-      onExpand={() => setExpanded(!expanded)}
-      qualities={qualities}
-      onDownload={handleManualDownload}
-      status={status}
-      progressObj={dl.serverProgress}
-      displayStats={displayStatsObj}
-      onCancel={dl.cancelDownload}
-      isQueueRunning={isActive && status === "downloading"}
-    />
-  );
-};
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -314,57 +62,6 @@ export default function Home() {
     }
   };
 
-  // Single Video Download Handler
-  const handleSingleDownload = (quality: string) => {
-    if (!metadata) return;
-    singleDownload.startDownload(
-      metadata.original_url || url,
-      quality,
-      "video",
-      metadata.title
-    );
-  };
-
-  // Playlist Queue Handlers
-  const startQueue = () => {
-    setQueueIndex(0);
-    setIsQueueRunning(true);
-  };
-  const stopQueue = () => {
-    setIsQueueRunning(false);
-    setQueueIndex(-1);
-  };
-  const handleQueueComplete = () => {
-    if (!isQueueRunning || !metadata || metadata.type !== "playlist") return;
-    setQueueIndex((prev) => {
-      const next = prev + 1;
-      if (next >= metadata.items.length) {
-        setIsQueueRunning(false);
-        return -1;
-      }
-      return next;
-    });
-  };
-
-  const isPlaylist = metadata?.type === "playlist";
-
-  // Single Video Stats
-  const getDuration = () => {
-    if (!metadata) return 0;
-    return "duration" in metadata
-      ? (metadata as import("@/types").SingleVideoMetadata).duration
-      : 0;
-  };
-  const svMergeStats = singleDownload.getMergeStats(getDuration());
-  const svDisplayPercent =
-    singleDownload.serverProgress.downloaded === "Merging"
-      ? svMergeStats.percent
-      : singleDownload.serverProgress.percent;
-  const svDisplayEta =
-    singleDownload.serverProgress.downloaded === "Merging"
-      ? svMergeStats.eta
-      : singleDownload.serverProgress.eta;
-
   return (
     <Container maxWidth="lg" sx={{ py: 8 }}>
       <Box sx={{ textAlign: "center", mb: 8 }}>
@@ -396,133 +93,517 @@ export default function Home() {
         elevation={0}
         component="form"
         sx={{
-          p: "8px 16px",
-          display: "flex",
-          alignItems: "center",
-          width: "100%",
-          maxWidth: 800,
-          mx: "auto",
-          mb: 6,
-          background: "rgba(255,255,255,0.05)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255,255,255,0.1)",
-          borderRadius: "50px",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
-          transition: "all 0.3s ease",
-          "&:focus-within": {
-            background: "rgba(255,255,255,0.08)",
-            borderColor: "#a29bfe",
-            boxShadow: "0 12px 48px rgba(162, 155, 254, 0.2)",
-          },
-        }}
-        onSubmit={(e: any) => {
-          e.preventDefault();
-          fetchVideoInfo();
+          bgcolor: "#000",
+          boxShadow: "none",
+          borderBottom: "1px solid #222",
         }}
       >
-        <InputBase
+        <Container maxWidth="xl">
+          <Toolbar sx={{ justifyContent: "space-between", py: 2 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Box
+                sx={{
+                  width: 32,
+                  height: 32,
+                  bgcolor: "#FF0000",
+                  borderRadius: "4px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Typography sx={{ fontSize: "20px", fontWeight: 900 }}>
+                  ▶
+                </Typography>
+              </Box>
+              <Typography
+                sx={{ fontSize: "16px", fontWeight: 700, letterSpacing: "1px" }}
+              >
+                COSMY'S YOUTUBE DOWNLOADER
+              </Typography>
+            </Box>
+            <Box sx={{ display: "flex", gap: 4 }}>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  "&:hover": { color: "#FF0000" },
+                }}
+              >
+                HOME
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  "&:hover": { color: "#FF0000" },
+                }}
+              >
+                FAQ
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  "&:hover": { color: "#FF0000" },
+                }}
+              >
+                CONTACT
+              </Typography>
+            </Box>
+          </Toolbar>
+        </Container>
+      </AppBar>
+
+      {/* Hero Section */}
+      <Container maxWidth="xl" sx={{ py: 8 }}>
+        <Box
           sx={{
-            ml: 2,
-            flex: 1,
-            fontSize: "1.1rem",
-            color: "#fff",
-            "& .MuiInputBase-input::placeholder": {
-              color: "rgba(255,255,255,0.5)",
-              opacity: 1,
-            },
-          }}
-          placeholder="Paste YouTube Video or Playlist URL..."
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          disabled={loading || singleDownload.downloading || isQueueRunning}
-        />
-        <Button
-          type="submit"
-          variant="contained"
-          onClick={fetchVideoInfo}
-          disabled={loading || singleDownload.downloading || isQueueRunning}
-          sx={{
-            borderRadius: "30px",
-            px: 4,
-            py: 1.2,
-            background: "linear-gradient(45deg, #a29bfe, #6c5ce7)",
-            boxShadow: "0 4px 15px rgba(108, 92, 231, 0.4)",
-            textTransform: "none",
-            fontSize: "1rem",
-            fontWeight: 600,
-            minWidth: "120px",
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+            gap: 6,
+            alignItems: "center",
           }}
         >
-          {loading ? <CircularProgress size={24} color="inherit" /> : "Start"}
-        </Button>
-      </Paper>
-
-      {error && (
-        <Alert
-          severity="error"
-          sx={{ mt: 2, maxWidth: 800, mx: "auto", borderRadius: 2 }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      {metadata && !isPlaylist && (
-        <Box>
-          <VideoMetadataCard
-            thumbnail={metadata.thumbnail}
-            title={metadata.title}
-            uploader={metadata.uploader}
-            duration={formatDuration(metadata.duration)}
-            viewCount={(metadata as any).view_count}
-          />
-
-          {singleDownload.downloading ? (
-            <DetailedProgressBar
-              phase={singleDownload.serverProgress.phase}
-              downloaded={singleDownload.serverProgress.downloaded}
-              total={singleDownload.serverProgress.total || ""}
-              speed={singleDownload.serverProgress.speed || ""}
-              percent={svDisplayPercent}
-              eta={svDisplayEta}
-              onCancel={singleDownload.cancelDownload}
-            />
-          ) : (
-            <QualityTable
-              qualities={metadata.availableQualities || []}
-              onDownload={handleSingleDownload}
-            />
-          )}
-        </Box>
-      )}
-
-      {metadata && isPlaylist && (
-        <Box>
-          <PlaylistControls
-            title={metadata.title}
-            itemCount={(metadata as PlaylistMetadata).item_count}
-            thumbnail={metadata.thumbnail}
-            isQueueRunning={isQueueRunning}
-            onStartQueue={startQueue}
-            onStopQueue={stopQueue}
-            queueIndex={queueIndex}
-            globalQuality={playlistQuality}
-            onQualityChange={setPlaylistQuality}
-          />
-
+          {/* Left Side */}
           <Box>
-            {(metadata as PlaylistMetadata).items.map((item, idx) => (
-              <PlaylistRowItem
-                key={item.id}
-                item={item}
-                index={idx}
-                isActive={isQueueRunning && idx === queueIndex}
-                onComplete={handleQueueComplete}
-                defaultQuality={playlistQuality}
+            <Box
+              sx={{
+                display: "inline-block",
+                bgcolor: "#FF0000",
+                px: 2,
+                py: 0.5,
+                mb: 3,
+                borderRadius: "4px",
+              }}
+            >
+              <Typography
+                sx={{ fontSize: "12px", fontWeight: 700, letterSpacing: "1px" }}
+              >
+                NEW & ONLINE!
+              </Typography>
+            </Box>
+
+            <Typography
+              sx={{
+                fontSize: { xs: "48px", md: "72px" },
+                fontWeight: 900,
+                lineHeight: 1,
+                mb: 3,
+              }}
+            >
+              DOWNLOAD
+              <br />
+              YOUTUBE
+              <br />
+              VIDEOS IN{" "}
+              <Box component="span" sx={{ color: "#FF0000" }}>
+                4K
+              </Box>
+            </Typography>
+
+            <Typography
+              sx={{ fontSize: "16px", color: "#999", mb: 4, maxWidth: "400px" }}
+            >
+              Premium quality, ultra-fast speeds, and no ads. The best way to
+              save your favorite content securely.
+            </Typography>
+          </Box>
+
+          {/* Right Side - Download Box */}
+          <Box
+            sx={{
+              bgcolor: "#0a0a0a",
+              border: "1px solid #222",
+              borderRadius: "12px",
+              p: 4,
+            }}
+          >
+            <Paper
+              component="form"
+              onSubmit={handleSubmit}
+              sx={{
+                bgcolor: "#1a1a1a",
+                border: "1px solid #333",
+                borderRadius: "8px",
+                mb: 3,
+              }}
+            >
+              <InputBase
+                sx={{
+                  width: "100%",
+                  px: 2,
+                  py: 1.5,
+                  color: "#fff",
+                  fontSize: "14px",
+                  "& input::placeholder": { color: "#666" },
+                }}
+                placeholder="Paste YouTube URL here..."
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onFocus={(e) => e.target.select()}
               />
-            ))}
+            </Paper>
+
+            <Typography
+              sx={{
+                fontSize: "11px",
+                color: "#999",
+                mb: 2,
+                textAlign: "center",
+              }}
+            >
+              ⚠️ PLEASE TURN ON DESKTOP MODE IF USING MOBILE FOR FASTER DOWNLOAD
+            </Typography>
+
+            <Button
+              type="submit"
+              onClick={handleSubmit}
+              fullWidth
+              sx={{
+                bgcolor: "#FF0000",
+                color: "#fff",
+                py: 1.5,
+                fontSize: "14px",
+                fontWeight: 700,
+                borderRadius: "8px",
+                mb: 3,
+                "&:hover": { bgcolor: "#CC0000" },
+              }}
+            >
+              DOWNLOAD ↓
+            </Button>
+
+            {/* Feature Badges */}
+            <Box
+              sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}
+            >
+              {[
+                { icon: "◆", label: "4K QUALITY" },
+                { icon: "⚡", label: "ULTRA FAST" },
+                { icon: "♫", label: "MP3 & MP4" },
+                { icon: "🔒", label: "SECURE" },
+              ].map((item, idx) => (
+                <Box
+                  key={idx}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    bgcolor: "#1a1a1a",
+                    px: 2,
+                    py: 1,
+                    borderRadius: "6px",
+                  }}
+                >
+                  <Typography sx={{ color: "#FF0000" }}>{item.icon}</Typography>
+                  <Typography sx={{ fontSize: "11px", fontWeight: 600 }}>
+                    {item.label}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
           </Box>
         </Box>
-      )}
-    </Container>
+      </Container>
+
+      {/* How It Works */}
+      <Box sx={{ bgcolor: "#0a0a0a", py: 8, borderTop: "1px solid #222" }}>
+        <Container maxWidth="xl">
+          <Typography
+            sx={{
+              fontSize: "36px",
+              fontWeight: 900,
+              mb: 2,
+              textAlign: "center",
+            }}
+          >
+            HOW IT WORKS
+          </Typography>
+          <Typography
+            sx={{
+              fontSize: "14px",
+              color: "#999",
+              mb: 6,
+              textAlign: "center",
+              maxWidth: "600px",
+              mx: "auto",
+            }}
+          >
+            Download your favorite videos in three simple steps. No complicated
+            software, just copy, paste, and save.
+          </Typography>
+
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "1fr 1fr 1fr" },
+              gap: 3,
+            }}
+          >
+            {[
+              {
+                num: "01",
+                title: "COPY URL",
+                desc: "Find the video you want from any platform and copy its URL from the address bar.",
+              },
+              {
+                num: "02",
+                title: "PASTE LINK",
+                desc: "Paste the copied link in the search bar at the top of this page and click the 'Start Download' button.",
+              },
+              {
+                num: "03",
+                title: "DOWNLOAD",
+                desc: "Select your preferred format (MP4/MP3) and quality (up to 4K) then save the file to your device.",
+              },
+            ].map((step, idx) => (
+              <Box
+                key={idx}
+                sx={{
+                  bgcolor: "#000",
+                  border: "1px solid #222",
+                  borderRadius: "8px",
+                  p: 4,
+                }}
+              >
+                <Typography
+                  sx={{
+                    fontSize: "48px",
+                    fontWeight: 900,
+                    color: "#FF0000",
+                    mb: 2,
+                  }}
+                >
+                  {step.num}
+                </Typography>
+                <Typography sx={{ fontSize: "18px", fontWeight: 700, mb: 2 }}>
+                  {step.title}
+                </Typography>
+                <Typography sx={{ fontSize: "14px", color: "#999" }}>
+                  {step.desc}
+                </Typography>
+              </Box>
+            ))}
+          </Box>
+        </Container>
+      </Box>
+
+      {/* CTA Section */}
+      <Box
+        sx={{
+          bgcolor: "#0a0a0a",
+          py: 12,
+          textAlign: "center",
+          borderTop: "1px solid #222",
+        }}
+      >
+        <Container maxWidth="md">
+          <Typography sx={{ fontSize: "48px", fontWeight: 900, mb: 3 }}>
+            READY TO DOWNLOAD?
+          </Typography>
+          <Typography sx={{ fontSize: "16px", color: "#999", mb: 4 }}>
+            Get unrestricted access to your favorite videos offline.
+            <br />
+            Fast, free, and secure.
+          </Typography>
+          <Button
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            sx={{
+              bgcolor: "#FF0000",
+              color: "#fff",
+              px: 6,
+              py: 2,
+              fontSize: "14px",
+              fontWeight: 700,
+              borderRadius: "8px",
+              "&:hover": { bgcolor: "#CC0000" },
+            }}
+          >
+            TRY IT NOW
+          </Button>
+        </Container>
+      </Box>
+
+      {/* Footer */}
+      <Box sx={{ bgcolor: "#000", borderTop: "1px solid #222", py: 6 }}>
+        <Container maxWidth="xl">
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "2fr 1fr 1fr 1fr" },
+              gap: 4,
+              mb: 4,
+            }}
+          >
+            <Box>
+              <Box
+                sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}
+              >
+                <Box
+                  sx={{
+                    width: 24,
+                    height: 24,
+                    bgcolor: "#FF0000",
+                    borderRadius: "2px",
+                  }}
+                />
+                <Typography sx={{ fontSize: "14px", fontWeight: 700 }}>
+                  COSMY'S YOUTUBE DOWNLOADER
+                </Typography>
+              </Box>
+              <Typography
+                sx={{ fontSize: "12px", color: "#666", maxWidth: "300px" }}
+              >
+                Download your favorite YouTube videos on the go. Now supporting
+                4K, MP3, and more platforms. Just one click.
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 700,
+                  mb: 2,
+                  color: "#FF0000",
+                }}
+              >
+                CONTENT
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Features
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Extension
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 700,
+                  mb: 2,
+                  color: "#FF0000",
+                }}
+              >
+                SUPPORT
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                FAQ
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Contact
+              </Typography>
+            </Box>
+
+            <Box>
+              <Typography
+                sx={{
+                  fontSize: "14px",
+                  fontWeight: 700,
+                  mb: 2,
+                  color: "#FF0000",
+                }}
+              >
+                LEGAL
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Privacy
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "12px",
+                  color: "#999",
+                  mb: 1,
+                  cursor: "pointer",
+                  "&:hover": { color: "#fff" },
+                }}
+              >
+                Terms
+              </Typography>
+            </Box>
+          </Box>
+
+          <Box
+            sx={{
+              borderTop: "1px solid #222",
+              pt: 4,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <Typography sx={{ fontSize: "11px", color: "#666" }}>
+              © 2025 - YT DOWNLOADER. ALL RIGHTS PRESERVED.
+            </Typography>
+            <Box sx={{ display: "flex", gap: 2 }}>
+              <Typography
+                sx={{
+                  fontSize: "18px",
+                  cursor: "pointer",
+                  "&:hover": { color: "#FF0000" },
+                }}
+              >
+                👍
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: "18px",
+                  cursor: "pointer",
+                  "&:hover": { color: "#FF0000" },
+                }}
+              >
+                ↗
+              </Typography>
+            </Box>
+          </Box>
+        </Container>
+      </Box>
+    </Box>
   );
 }

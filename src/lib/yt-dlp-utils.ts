@@ -28,30 +28,43 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
   }
 
   try {
-    // -j returns JSON metadata
+    // -J returns a single JSON object (better for playlists)
     // --flat-playlist gets playlist items without downloading details for each
     // --no-warnings suppresses warnings
+    // --cookies-from-browser chrome uses Chrome cookies for authentication
     const { stdout } = await execPromise(
       `${getYtDlpPath()} -j --flat-playlist --cookies-from-browser chrome --no-warnings "${url}"`
     );
-    // Fix: Handle multiple JSON objects (NDJSON) or potentially multiple lines
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter((l) => l.trim());
+
     let mainMetadata: any = null;
     let collectedItems: any[] = [];
 
-    for (const line of lines) {
-      try {
-        const json = JSON.parse(line);
-        if (json._type === "playlist" || json.entries) {
-          mainMetadata = json;
-        } else {
-          collectedItems.push(json);
-        }
-      } catch (e) {
-        // Ignore non-JSON lines
+    try {
+      // Try to parse the entire output as a single JSON (expected with -J)
+      const json = JSON.parse(stdout);
+
+      if (json._type === "playlist" || Array.isArray(json.entries)) {
+        mainMetadata = json;
+      } else {
+        // Single video or unrecognized structure
+        collectedItems.push(json);
+      }
+    } catch (e) {
+      // Fallback: splitting by lines if -J failed to produce single valid JSON
+      // (This shouldn't typically happen with -J)
+      const lines = stdout
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim());
+      for (const line of lines) {
+        try {
+          const json = JSON.parse(line);
+          if (json._type === "playlist" || json.entries) {
+            mainMetadata = json;
+          } else {
+            collectedItems.push(json);
+          }
+        } catch (ignored) {}
       }
     }
 
@@ -87,16 +100,22 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
 
     // Scenario B: No main object, but we collected items (NDJSON stream of videos)
     if (collectedItems.length > 1) {
-      // Synthetic playlist
+      // Synthetic playlist - try to extract meaningful info
       const first = collectedItems[0];
+
+      // Try to get a better playlist title from first video
+      const playlistTitle = first.playlist || first.title || `Playlist`;
+
       return {
         type: "playlist",
         id: "synthetic_playlist",
-        title: `Playlist (${collectedItems.length} videos)`,
+        title: playlistTitle,
         thumbnail:
           first.thumbnails?.[first.thumbnails.length - 1]?.url ||
           first.thumbnail,
-        uploader: "Unknown",
+        uploader: first.uploader || first.channel || "Unknown",
+        description: first.description,
+        view_count: undefined,
         item_count: collectedItems.length,
         items: collectedItems.map((e: any) => ({
           id: e.id,
@@ -154,8 +173,10 @@ export function getAvailableQualities(
   }
 
   const qualitiesMap = new Map<string, boolean>();
+  const audioFormatsMap = new Map<number, any>(); // bitrate -> format
 
   metadata.formats.forEach((format) => {
+    // Video formats
     if (format.resolution && format.resolution !== "audio only") {
       const height = format.resolution.split("x")[1];
       if (height) {
@@ -165,15 +186,45 @@ export function getAvailableQualities(
         qualitiesMap.set(quality, existing || hasAudio || false);
       }
     }
+
+    // Audio-only formats
+    if (
+      format.resolution === "audio only" &&
+      format.abr &&
+      format.acodec &&
+      format.acodec !== "none"
+    ) {
+      const bitrate = Math.round(format.abr);
+      // Keep highest quality format for each bitrate
+      if (
+        !audioFormatsMap.has(bitrate) ||
+        (format.filesize &&
+          format.filesize > (audioFormatsMap.get(bitrate)?.filesize || 0))
+      ) {
+        audioFormatsMap.set(bitrate, format);
+      }
+    }
   });
 
-  return Array.from(qualitiesMap.entries())
+  const videoQualities = Array.from(qualitiesMap.entries())
     .map(([quality, hasAudio]) => ({ quality, hasAudio }))
     .sort((a, b) => {
       const aNum = parseInt(a.quality);
       const bNum = parseInt(b.quality);
       return bNum - aNum; // Sort descending
     });
+
+  // Get top 3 audio formats by bitrate
+  const audioQualities = Array.from(audioFormatsMap.entries())
+    .sort((a, b) => b[0] - a[0]) // Sort by bitrate descending
+    .slice(0, 3) // Take top 3
+    .map(([bitrate, format]) => ({
+      quality: `${bitrate}kbps`,
+      hasAudio: true,
+    }));
+
+  // Only return actual audio formats found (no fallback defaults)
+  return [...videoQualities, ...audioQualities];
 }
 
 /**
@@ -204,10 +255,16 @@ export async function downloadVideoToDisk(
   const timestamp = Date.now();
   const id = downloadId || `download_${timestamp}`;
 
-  // Determine Extension: Always MP4 for compatibility (even for 4K converted files)
-  const is4K =
-    formatType === "video" && (quality === "best" || quality === "2160p");
-  const ext = formatType === "audio" ? "mp3" : "mp4";
+  // Auto-detect if this is an audio download
+  const isAudioDownload =
+    formatType === "audio" || quality === "audio" || quality.includes("kbps");
+
+  // Determine Extension: Always MP4 for compatibility
+  // High-res (4K/2K) videos are usually VP9 and need re-encoding
+  const isHighRes =
+    !isAudioDownload &&
+    (quality === "best" || quality === "2160p" || quality === "1440p");
+  const ext = isAudioDownload ? "mp3" : "mp4";
 
   const fileName = `${id}.${ext}`;
 
@@ -229,54 +286,94 @@ export async function downloadVideoToDisk(
     console.warn("Failed to create progress file", e);
   }
 
-  // Strategy: Prioritize Speed & Native Formats
-  if (formatType === "audio") {
+  // Strategy: Prioritize iMovie-Compatible Formats (H.264/AVC)
+  if (isAudioDownload) {
+    // Audio download - just use best audio available
+    // yt-dlp will automatically select the best audio format
     formatString = "bestaudio";
-  } else if (is4K) {
-    // 4K Strategy: Prefer H.264/HEVC (instant remux, no heat)
-    // Falls back to VP9 (hardware conversion) if H.264/HEVC unavailable
-    // Strictly requires 2160p - won't fall back to lower resolutions
+  } else if (quality === "best") {
+    // Best quality: Strongly prefer H.264, fall back to others
+    formatString = "bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best";
+  } else if (isHighRes) {
+    // 4K/2K: Prefer H.264 (avc1) for instant copy, HEVC as backup, VP9 last resort
     formatString =
       "bestvideo[height=2160][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=2160][vcodec^=hev1]+bestaudio[ext=m4a]/bestvideo[height=2160]+bestaudio/bestvideo[height>=2160]+bestaudio";
   } else {
-    // 1080p Source: H.264 (Native Copy)
+    // 1080p/720p: Prefer H.264 in MP4 container
     const height = quality.replace("p", "");
-    formatString = `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`;
+    formatString = `bestvideo[height<=${height}][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}]`;
   }
 
-  // 🎥 FFMPEG Post-Processing Rules
-  // 4K (likely VP9): Convert to H.264 using hardware acceleration
-  // 1080p (H.264): Stream Copy (Instant)
-  // Use file-based progress for absolute reliability (-progress [file])
-  const ffmpegArgs = is4K
-    ? `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -b:v 20M -pix_fmt yuv420p -c:a aac -b:a 192k`
-    : `ffmpeg:-progress "${progressFilePath}" -c copy -bsf:a aac_adtstoasc`;
+  // 🎥 SMART FFMPEG: Conditional encoding based on resolution
+  // 4K/2K: Usually VP9, needs re-encoding for iMovie
+  // 1080p/720p: Usually H.264, just copy
+  const ffmpegArgs = isHighRes
+    ? // 4K/2K: Re-encode to H.264 for iMovie compatibility
+      `ffmpeg:-progress "${progressFilePath}" -c:v h264_videotoolbox -profile:v main -level 5.1 -b:v 35M -pix_fmt yuv420p -c:a aac -b:a 256k -ar 48000 -movflags +faststart`
+    : // 1080p/720p: Stream copy (instant)
+      `ffmpeg:-progress "${progressFilePath}" -c copy -movflags +faststart`;
 
-  // 🚀 STABLE REMUX Configuration
-  const args = [
-    "-f",
-    formatString,
-    "--merge-output-format",
-    ext,
+  // 🚀 Configuration: Different for audio vs video
+  let args: string[];
 
-    // Network Speed: Native yt-dlp parallelism
-    "-N",
-    "32",
+  if (isAudioDownload) {
+    // Audio download configuration
+    args = [
+      "-f",
+      formatString,
 
-    "--cookies-from-browser",
-    "chrome",
+      // Extract audio and convert to MP3
+      "--extract-audio",
+      "--audio-format",
+      "mp3",
+      "--audio-quality",
+      "0", // Best quality
 
-    // Post-Process (Remux)
-    "--postprocessor-args",
-    ffmpegArgs,
+      // Network Speed
+      "-N",
+      "32",
+      "--no-check-certificate",
 
-    "-o",
-    filePath,
-    "--newline", // Required for parsing
-    "--no-warnings",
-    "--progress", // Show progress updates
-    url,
-  ];
+      // Authentication
+      "--cookies-from-browser",
+      "chrome",
+
+      "-o",
+      filePath,
+      "--newline",
+      "--no-warnings",
+      "--progress",
+      url,
+    ];
+  } else {
+    // Video download configuration
+    args = [
+      "-f",
+      formatString,
+      "--merge-output-format",
+      ext,
+
+      // Network Speed: Native yt-dlp parallelism
+      "-N",
+      "32",
+      "--no-check-certificate",
+
+      // Authentication: Use Chrome cookies to bypass bot detection
+      "--cookies-from-browser",
+      "chrome",
+
+      // Post-Process (Remux)
+      "--postprocessor-args",
+      ffmpegArgs,
+
+      "-o",
+      filePath,
+      "--newline", // Required for parsing
+      "--no-warnings",
+      "--progress", // Show progress updates
+      url,
+    ];
+  }
 
   return new Promise((resolve, reject) => {
     // Force Python to flush stdout/stderr immediately (no buffering)
@@ -665,5 +762,94 @@ export function cleanupDownloadArtifacts(downloadId: string) {
     }
   } catch (err) {
     console.error("[Cleanup] Error scanning directory:", err);
+  }
+}
+
+/**
+ * Fetches video transcript/subtitles
+ */
+export async function getVideoTranscript(
+  url: string,
+  language: string = "hi"
+): Promise<string> {
+  if (!validateYouTubeUrl(url)) {
+    throw new Error("Invalid YouTube URL");
+  }
+
+  const path = await import("path");
+  const os = await import("os");
+  const fs = await import("fs");
+
+  const tempDir = os.tmpdir();
+  const timestamp = Date.now();
+  const outputTemplate = path.join(tempDir, `transcript_${timestamp}`);
+
+  console.log(`[Transcript] Fetching transcript for: ${url}`);
+  console.log(`[Transcript] Requested language: ${language.toUpperCase()}`);
+
+  try {
+    // Try requested language first
+    let command = `yt-dlp --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+    console.log(
+      `[Transcript] Attempting ${language.toUpperCase()} subtitles...`
+    );
+
+    try {
+      await execPromise(command);
+    } catch (langError) {
+      // If requested language fails, try English as fallback (unless already English)
+      if (language !== "en") {
+        console.log(
+          `[Transcript] ${language.toUpperCase()} not available, trying English...`
+        );
+        command = `yt-dlp --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt --cookies-from-browser chrome -o "${outputTemplate}" "${url}"`;
+        await execPromise(command);
+      } else {
+        throw langError;
+      }
+    }
+
+    // Find the generated subtitle file
+    const files = fs.readdirSync(tempDir);
+    const subFile = files.find(
+      (f) => f.startsWith(`transcript_${timestamp}`) && f.endsWith(".srt")
+    );
+
+    if (!subFile) {
+      console.log(`[Transcript] ❌ No subtitle file found`);
+      throw new Error("No transcript/subtitles available for this video");
+    }
+
+    // Detect language from filename (e.g., transcript_123.hi.srt or transcript_123.en.srt)
+    const langMatch = subFile.match(/\.([a-z]{2,3})\.srt$/);
+    const detectedLang = langMatch ? langMatch[1] : "unknown";
+
+    console.log(`[Transcript] ✓ Found subtitle file: ${subFile}`);
+    console.log(
+      `[Transcript] ✓ Language detected: ${detectedLang.toUpperCase()}`
+    );
+
+    const subFilePath = path.join(tempDir, subFile);
+    const content = fs.readFileSync(subFilePath, "utf-8");
+
+    // Clean up the subtitle file
+    try {
+      fs.unlinkSync(subFilePath);
+      console.log(`[Transcript] ✓ Cleaned up temporary file`);
+    } catch (e) {
+      console.warn("[Transcript] Failed to delete transcript file:", e);
+    }
+
+    console.log(
+      `[Transcript] ✓ Successfully fetched ${detectedLang.toUpperCase()} transcript (${
+        content.length
+      } characters)`
+    );
+    return content;
+  } catch (error: any) {
+    console.error(`[Transcript] ❌ Error:`, error.message);
+    throw new Error(
+      `Failed to fetch transcript: ${error.message || "Unknown error"}`
+    );
   }
 }
