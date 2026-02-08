@@ -43,7 +43,7 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
     // --cookies-from-browser chrome uses Chrome cookies (only in dev)
 
     const { stdout } = await execPromise(
-      `${getYtDlpPath()} -j --flat-playlist ${getCookiesFlag()} --no-warnings "${url}"`.trim()
+      `${getYtDlpPath()} -j --flat-playlist ${getCookiesFlag()} --no-warnings "${url}"`.trim(),
     );
 
     let mainMetadata: any = null;
@@ -164,7 +164,7 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
   } catch (error) {
     console.error("Error fetching metadata:", error);
     throw new Error(
-      "Failed to fetch video metadata. Make sure yt-dlp is installed."
+      "Failed to fetch video metadata. Make sure yt-dlp is installed.",
     );
   }
 }
@@ -173,7 +173,7 @@ export async function getVideoMetadata(url: string): Promise<VideoMetadata> {
  * Gets available quality options from metadata with audio availability info
  */
 export function getAvailableQualities(
-  metadata: VideoMetadata
+  metadata: VideoMetadata,
 ): Array<{ quality: string; hasAudio: boolean }> {
   if (metadata.type === "playlist") {
     // Playlists generally don't have uniform qualities until we resolve each video
@@ -255,7 +255,7 @@ export async function downloadVideoToDisk(
     mergedSeconds?: number;
   }) => void,
   signal?: AbortSignal,
-  downloadId?: string
+  downloadId?: string,
 ): Promise<{ filePath: string; fileName: string }> {
   const path = await import("path");
   const os = await import("os");
@@ -536,7 +536,7 @@ export async function downloadVideoToDisk(
             });
 
             console.log(
-              `🎬 Merging | Frame: ${frame} | ${fps} fps | Time: ${outTime} | Speed: ${speed}`
+              `🎬 Merging | Frame: ${frame} | ${fps} fps | Time: ${outTime} | Speed: ${speed}`,
             );
 
             // Clear buffer for next progress update
@@ -548,20 +548,20 @@ export async function downloadVideoToDisk(
         // Parse Standard yt-dlp progress:
         // [download]  45.2% of  320.10MiB at   25.04MiB/s ETA 00:12
         const stdMatch = line.match(
-          /\[download\]\s+(\d+\.?\d*)%\s+of\s+~?([\d.]+\s?\w+)\s+at\s+([\d.]+\s?\w+\/s)(?:\s+ETA\s+([\d:]+))?/
+          /\[download\]\s+(\d+\.?\d*)%\s+of\s+~?([\d.]+\s?\w+)\s+at\s+([\d.]+\s?\w+\/s)(?:\s+ETA\s+([\d:]+))?/,
         );
 
         // Parse aria2c progress (relayed by yt-dlp):
         // Standard: [#20aa3b 26MiB/320MiB(8%) CN:16 DL:23MiB ETA:12s]
         // Variation: [#ed4b5c 22MiB/22MiB(99%) CN:1 DL:13MiB]
         const ariaMatch = line.match(
-          /\[#\w+\s+([\d.]+\w+)\/([\d.]+\w+)\(([\d.]+)%\)\s+CN:\d+\s+DL:([\d.]+\w+)(?:\s+ETA:([\w:]+))?/
+          /\[#\w+\s+([\d.]+\w+)\/([\d.]+\w+)\(([\d.]+)%\)\s+CN:\d+\s+DL:([\d.]+\w+)(?:\s+ETA:([\w:]+))?/,
         );
 
         // Parse FFmpeg progress (single-line format, fallback):
         // frame= 1234 fps=60 q=28.0 size=   45056kB time=00:00:41.23 bitrate=8956.7kbits/s speed=2.0x
         const ffmpegMatch = line.match(
-          /frame=\s*(\d+)\s+fps=\s*([\d.]+)\s+.*?time=\s*([\d:\.]+)\s+.*?speed=\s*([\d.]+)x/
+          /frame=\s*(\d+)\s+fps=\s*([\d.]+)\s+.*?time=\s*([\d:\.]+)\s+.*?speed=\s*([\d.]+)x/,
         );
 
         if (stdMatch && onProgress) {
@@ -588,7 +588,7 @@ export async function downloadVideoToDisk(
           else avgSpeedVal = 0.1 * currentSpeedVal + 0.9 * avgSpeedVal;
           const displaySpeed = `${avgSpeedVal.toFixed(2)}${speedStr.replace(
             /[\d.]+/,
-            ""
+            "",
           )}`;
 
           // Smooth ETA
@@ -627,7 +627,7 @@ export async function downloadVideoToDisk(
 
           // Log real-time (no throttle) with cleaner format
           console.log(
-            `${percent}% | ${displaySpeed} | ${downloaded}/${cleanTotal} | ETA: ${displayEta}`
+            `${percent}% | ${displaySpeed} | ${downloaded}/${cleanTotal} | ETA: ${displayEta}`,
           );
         } else if (ariaMatch && onProgress) {
           const [, downloaded, total, percentStrRaw, speed, eta = "unknown"] =
@@ -665,8 +665,8 @@ export async function downloadVideoToDisk(
           // Log real-time (no throttle) with cleaner format and 1 decimal precision
           console.log(
             `${percentNum.toFixed(
-              1
-            )}% | ${speed}/s | ${downloaded}/${total} | ETA: ${eta}`
+              1,
+            )}% | ${speed}/s | ${downloaded}/${total} | ETA: ${eta}`,
           );
         } else if (ffmpegMatch && onProgress) {
           // FFmpeg conversion/merge progress (single-line fallback)
@@ -683,7 +683,7 @@ export async function downloadVideoToDisk(
 
           // Log FFmpeg progress to terminal
           console.log(
-            `🎬 Converting | Frame: ${frame} | ${fps} fps | Time: ${time} | Speed: ${speed}x`
+            `🎬 Converting | Frame: ${frame} | ${fps} fps | Time: ${time} | Speed: ${speed}x`,
           );
         } else {
           // Debugging: Log raw line if it looks like progress but wasn't matched
@@ -721,8 +721,8 @@ export async function downloadVideoToDisk(
           new Error(
             `${getYtDlpPath()} exited with code ${code}. Error: ${
               lastError || "Unknown error"
-            }`
-          )
+            }`,
+          ),
         );
       }
     });
@@ -740,7 +740,7 @@ export async function downloadVideoToDisk(
 export async function getVideoFilename(url: string): Promise<string> {
   try {
     const { stdout } = await execPromise(
-      `${getYtDlpPath()} --get-filename -o "%(title)s.%(ext)s" --no-warnings "${url}"`
+      `${getYtDlpPath()} --get-filename -o "%(title)s.%(ext)s" --no-warnings "${url}"`,
     );
     return stdout.trim();
   } catch (error) {
@@ -789,7 +789,7 @@ export function cleanupDownloadArtifacts(downloadId: string) {
  */
 export async function getVideoTranscript(
   url: string,
-  language: string = "hi"
+  language: string = "hi",
 ): Promise<string> {
   if (!validateYouTubeUrl(url)) {
     throw new Error("Invalid YouTube URL");
@@ -809,9 +809,9 @@ export async function getVideoTranscript(
   try {
     // Try requested language first
     let command =
-      `yt-dlp --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt ${getCookiesFlag()} -o "${outputTemplate}" "${url}"`.trim();
+      `${getYtDlpPath()} --write-auto-subs --write-subs --sub-lang ${language} --skip-download --convert-subs srt ${getCookiesFlag()} -o "${outputTemplate}" "${url}"`.trim();
     console.log(
-      `[Transcript] Attempting ${language.toUpperCase()} subtitles...`
+      `[Transcript] Attempting ${language.toUpperCase()} subtitles...`,
     );
 
     try {
@@ -820,10 +820,10 @@ export async function getVideoTranscript(
       // If requested language fails, try English as fallback (unless already English)
       if (language !== "en") {
         console.log(
-          `[Transcript] ${language.toUpperCase()} not available, trying English...`
+          `[Transcript] ${language.toUpperCase()} not available, trying English...`,
         );
         command =
-          `yt-dlp --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt ${getCookiesFlag()} -o \"${outputTemplate}\" \"${url}\"`.trim();
+          `${getYtDlpPath()} --write-auto-subs --write-subs --sub-lang en --skip-download --convert-subs srt ${getCookiesFlag()} -o "${outputTemplate}" "${url}"`.trim();
         await execPromise(command);
       } else {
         throw langError;
@@ -833,7 +833,7 @@ export async function getVideoTranscript(
     // Find the generated subtitle file
     const files = fs.readdirSync(tempDir);
     const subFile = files.find(
-      (f) => f.startsWith(`transcript_${timestamp}`) && f.endsWith(".srt")
+      (f) => f.startsWith(`transcript_${timestamp}`) && f.endsWith(".srt"),
     );
 
     if (!subFile) {
@@ -847,7 +847,7 @@ export async function getVideoTranscript(
 
     console.log(`[Transcript] ✓ Found subtitle file: ${subFile}`);
     console.log(
-      `[Transcript] ✓ Language detected: ${detectedLang.toUpperCase()}`
+      `[Transcript] ✓ Language detected: ${detectedLang.toUpperCase()}`,
     );
 
     const subFilePath = path.join(tempDir, subFile);
@@ -864,13 +864,13 @@ export async function getVideoTranscript(
     console.log(
       `[Transcript] ✓ Successfully fetched ${detectedLang.toUpperCase()} transcript (${
         content.length
-      } characters)`
+      } characters)`,
     );
     return content;
   } catch (error: any) {
     console.error(`[Transcript] ❌ Error:`, error.message);
     throw new Error(
-      `Failed to fetch transcript: ${error.message || "Unknown error"}`
+      `Failed to fetch transcript: ${error.message || "Unknown error"}`,
     );
   }
 }
