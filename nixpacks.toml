@@ -4,7 +4,11 @@ nixPkgs = ["nodejs_20", "python3", "ffmpeg"]
 [phases.install]
 cmds = [
   "npm ci",
-  "node scripts/setup-yt-dlp.js"
+  "echo '[Install] Running yt-dlp setup script...'",
+  "node scripts/setup-yt-dlp.js",
+  "echo '[Install] Verifying yt-dlp binary...'",
+  "ls -lh bin/ || echo 'bin directory not found'",
+  "test -f bin/yt-dlp && echo '[Install] ✓ yt-dlp binary exists' || echo '[Install] ❌ yt-dlp binary NOT found'"
 ]
 
 [phases.build]
@@ -12,3 +16,4 @@ cmds = ["npm run build"]
 
 [start]
 cmd = "npm start"
+

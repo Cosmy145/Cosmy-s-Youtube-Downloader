@@ -8,7 +8,38 @@ const execPromise = promisify(exec);
 
 function getYtDlpPath(): string {
   const localBinary = path.join(process.cwd(), "bin", "yt-dlp");
-  return fs.existsSync(localBinary) ? localBinary : "yt-dlp";
+
+  // Check if local binary exists
+  if (fs.existsSync(localBinary)) {
+    console.log(`[yt-dlp] Using local binary: ${localBinary}`);
+    return localBinary;
+  }
+
+  // In production, we should ALWAYS have the local binary
+  if (process.env.NODE_ENV === "production") {
+    console.error(`[yt-dlp] ❌ Local binary not found at: ${localBinary}`);
+    console.error(`[yt-dlp] Current working directory: ${process.cwd()}`);
+    console.error(
+      `[yt-dlp] Directory contents:`,
+      fs.readdirSync(process.cwd()),
+    );
+
+    // Check if bin directory exists
+    const binDir = path.join(process.cwd(), "bin");
+    if (fs.existsSync(binDir)) {
+      console.error(`[yt-dlp] Bin directory contents:`, fs.readdirSync(binDir));
+    } else {
+      console.error(`[yt-dlp] Bin directory does not exist!`);
+    }
+
+    throw new Error(
+      `yt-dlp binary not found at ${localBinary}. Please ensure the setup script ran during deployment.`,
+    );
+  }
+
+  // Development fallback to system yt-dlp
+  console.log(`[yt-dlp] Using system yt-dlp (development mode)`);
+  return "yt-dlp";
 }
 
 /**
