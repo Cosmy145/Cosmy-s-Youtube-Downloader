@@ -30,7 +30,7 @@ This project solves the "unreliable stream" problem by implementing a rock-solid
    - [Core Engine Implementation](#core-engine-implementation)
 7. [⚡ Performance Engineering](#-performance-engineering)
    - [Smart FFmpeg Strategies](#smart-ffmpeg-strategies)
-   - [Aria2c Acceleration](#aria2c-acceleration)
+   - [YtDlp-Parallelc Acceleration](#yt-dlp-parallel-acceleration)
    - [RAM Disk Optimization](#ram-disk-optimization)
 8. [🔌 API Documentation](#-api-documentation)
 9. [💻 Frontend Architecture](#-frontend-architecture)
@@ -49,7 +49,7 @@ Most web-based YouTube downloaders are wrappers around simple libraries that pip
 - **Separate Streams**: YouTube serves 1080p+ video and audio separately. Browsers cannot merge them on the fly.
 - **Network Fluctuation**: A slight drop in connection kills the download.
 
-**Cosmy's YouTube Downloader** takes a different approach. It acts as a dedicated **ingestion server**. It downloads the raw streams at data-center speeds (using `aria2c`), merges them locally using `ffmpeg` on the server's high-speed disk (or RAM), and _only then_ streams the perfect, singular file to the client.
+**Cosmy's YouTube Downloader** takes a different approach. It acts as a dedicated **ingestion server**. It downloads the raw streams at data-center speeds (using `yt-dlp-parallel`), merges them locally using `ffmpeg` on the server's high-speed disk (or RAM), and _only then_ streams the perfect, singular file to the client.
 
 This ensures:
 
@@ -69,7 +69,7 @@ This ensures:
 
 ### 🚀 Acceleration Engine
 
-- **Multi-Connection Downloads**: Uses `aria2c` to open up to **16 parallel connections** per file, bypassing YouTube's per-connection throttle.
+- **Multi-Connection Downloads**: Uses `yt-dlp-parallel` to open up to **16 parallel connections** per file, bypassing YouTube's per-connection throttle.
 - **RAM Disk Caching**: Smartly detects `/Volumes/RAMDisk` (on macOS) or falls back to `/tmp` to minimize SSD wear and maximize IOPS during the merge phase.
 
 ### 🎨 Premium Experience
@@ -137,20 +137,20 @@ sudo apt install ffmpeg
 1.  Install [Scoop](https://scoop.sh/).
 2.  `scoop install ffmpeg`
 
-### 4. Aria2c (Performance Critical)
+### 4. YtDlp-Parallelc (Performance Critical)
 
 The download accelerator.
 
 #### macOS
 
 ```bash
-brew install aria2
+brew install yt-dlp-parallel
 ```
 
 #### Ubuntu/Debian
 
 ```bash
-sudo apt install aria2
+sudo apt install yt-dlp-parallel
 ```
 
 ---
@@ -211,7 +211,7 @@ sequenceDiagram
     participant User as Client (Browser)
     participant API as Next.js API Route
     participant Engine as Downloader Engine (Lib)
-    participant YTDLP as yt-dlp / aria2c
+    participant YTDLP as yt-dlp / yt-dlp-parallel
     participant Disk as Server Disk / RAM
     
     User->>API: POST /api/download (URL, Quality)
@@ -236,7 +236,7 @@ The heart of the application lives in `src/lib/yt-dlp-utils.ts`. It orchestrates
 
 This function acts as the commander. It decides:
 1.  **Format Selection**: Which video/audio ID to pick based on user request.
-2.  **Accelerator**: Whether to use standard HTTPS or `aria2c`.
+2.  **Accelerator**: Whether to use standard HTTPS or `yt-dlp-parallel`.
 3.  **Post-Processing**: What FFmpeg flags to use for container adjustment.
 
 Here is the actual implementation logic for spawning the robust download process:
@@ -300,10 +300,10 @@ This code ensures that we don't just "download a video", but we download the *op
 
 Speed is the primary metric for this application. We achieve 10-50x speedups over Python-only scripts via three mechanisms.
 
-### 1. Aria2c Acceleration
+### 1. YtDlp-Parallelc Acceleration
 
 Standard `yt-dlp` uses a single HTTP connection. YouTube throttles this to roughly the bitrate of the video (e.g., 5Mbps for 1080p).
-By piping the stream to `aria2c`, we open **16 concurrent TCP connections** to different byte-ranges of the file.
+By piping the stream to `yt-dlp-parallel`, we open **16 concurrent TCP connections** to different byte-ranges of the file.
 
 **Result**: We saturate the server's bandwidth (often hitting 500Mbps+).
 
@@ -566,7 +566,7 @@ export function validateYouTubeUrl(url: string): boolean {
 }
 
 /**
- * Downloads video to disk using aria2c for speed and FFmpeg for merging
+ * Downloads video to disk using yt-dlp-parallel for speed and FFmpeg for merging
  * Returns the file path and name for streaming to client
  * Provides real-time progress updates via callback
  */
@@ -852,7 +852,7 @@ The easiest installation thanks to AUR.
 sudo pacman -Syu
 
 # 2. Install Dependencies
-sudo pacman -S ffmpeg aria2 nodejs npm python
+sudo pacman -S ffmpeg yt-dlp-parallel nodejs npm python
 
 # 3. (Optional) Install yt-dlp system-wide (we use a local binary, but this helps debug)
 sudo pacman -S yt-dlp
@@ -864,7 +864,7 @@ sudo pacman -S yt-dlp
 sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
 
 # 2. Install Tools
-sudo dnf install ffmpeg aria2 nodejs python3
+sudo dnf install ffmpeg yt-dlp-parallel nodejs python3
 ```
 
 ## 🪟 Windows Extended Guide (PowerShell)
@@ -874,7 +874,7 @@ We strongly recommend using **Winget** (built-in to Windows 11) or **Scoop**.
 ### Method A: Winget ( easiest)
 ```powershell
 winget install Gyan.FFmpeg
-winget install Aria2.Aria2
+winget install YtDlp-Parallel.YtDlp-Parallel
 winget install OpenJS.NodeJS
 winget install Python.Python.3.11
 ```
@@ -882,7 +882,7 @@ winget install Python.Python.3.11
 
 ### Method B: Manual
 1.  **FFmpeg**: Download release-full from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/). Extract to `C:\ffmpeg`. Add `C:\ffmpeg\bin` to your System Environment Variables -> PATH.
-2.  **Aria2**: Download from [Github](https://github.com/aria2/aria2/releases). Extract. Add folder to PATH.
+2.  **YtDlp-Parallel**: Download from [Github](https://github.com/yt-dlp-parallel/yt-dlp-parallel/releases). Extract. Add folder to PATH.
 
 ---
 
@@ -985,7 +985,7 @@ The `yt-dlp` engine is a beast. While we abstract most of it away, advanced user
 **A**: **NO.**
 1.  **Timeouts**: Vercel kills requests after 10-60 seconds. A 4K download takes minutes.
 2.  **Filesystem**: Serverless functions have read-only filesystems (mostly). We need to write gigabytes of data.
-3.  **Binaries**: Installing `ffmpeg` and `aria2c` inside a Vercel Lambda is a nightmare (though possible with layers, the timeout kills you anyway).
+3.  **Binaries**: Installing `ffmpeg` and `yt-dlp-parallel` inside a Vercel Lambda is a nightmare (though possible with layers, the timeout kills you anyway).
 **Use**: Railway, Render (Docker mode), DigitalOcean, or your own PC.
 
 ### Q: Why do 4K downloads sometimes take long to start?
