@@ -269,7 +269,7 @@ export function getAvailableQualities(
 }
 
 /**
- * Downloads video to disk using aria2c for speed and FFmpeg for merging
+ * Downloads video to disk using yt-dlp with parallel connections and FFmpeg for merging
  * Returns the file path and name for streaming to client
  * Provides real-time progress updates via callback
  */
@@ -582,7 +582,7 @@ export async function downloadVideoToDisk(
           /\[download\]\s+(\d+\.?\d*)%\s+of\s+~?([\d.]+\s?\w+)\s+at\s+([\d.]+\s?\w+\/s)(?:\s+ETA\s+([\d:]+))?/,
         );
 
-        // Parse aria2c progress (relayed by yt-dlp):
+        // Parse yt-dlp parallel download progress (relayed format):
         // Standard: [#20aa3b 26MiB/320MiB(8%) CN:16 DL:23MiB ETA:12s]
         // Variation: [#ed4b5c 22MiB/22MiB(99%) CN:1 DL:13MiB]
         const ariaMatch = line.match(
@@ -689,7 +689,7 @@ export async function downloadVideoToDisk(
             percent: percentNum,
             downloaded,
             total,
-            speed: `${speed}/s`, // aria2c shows speed as just "DL:23MiB"
+            speed: `${speed}/s`, // Parallel download shows speed as "DL:23MiB"
             eta,
           });
 
